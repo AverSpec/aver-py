@@ -1,6 +1,6 @@
 """Dogfood domain: aver-py describes its own behavior."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 from averspec import domain, action, query, assertion
 
@@ -53,6 +53,36 @@ class TraceCheck:
 
 
 @dataclass
+class TraceEntryCheck:
+    """Check a trace entry at a given index for kind, category, and status."""
+    index: int
+    kind: str
+    category: str
+    status: str = "pass"
+
+
+@dataclass
+class TraceLengthCheck:
+    """Check the trace has an expected number of entries."""
+    expected: int
+
+
+@dataclass
+class QueryResultCheck:
+    """Check that a query returned a specific value."""
+    marker_name: str
+    expected: Any
+
+
+@dataclass
+class VocabularyCheck:
+    """Check vocabulary counts on the current domain."""
+    actions: int
+    queries: int
+    assertions: int
+
+
+@dataclass
 class ProxyRestrictionCheck:
     """Check that a proxy rejects a marker of the wrong kind."""
     proxy_name: str
@@ -63,6 +93,13 @@ class ProxyRestrictionCheck:
 class CompletenessCheck:
     """Check that an adapter handles all markers."""
     missing: list[str]  # expected missing marker names (empty = complete)
+
+
+@dataclass
+class FailingAssertionSpec:
+    """Execute an assertion that is rigged to fail."""
+    marker_name: str
+    payload: Any = None
 
 
 # --- Results ---
@@ -88,13 +125,19 @@ class AverCore:
     create_adapter = action(AdapterSpec)
     call_operation = action(OperationCall)
     call_through_proxy = action(ProxyCall)
+    execute_failing_assertion = action(FailingAssertionSpec)
 
     # Queries: things we can inspect
     get_markers = query(type(None), list)
     get_trace = query(type(None), list)
+    get_query_result = query(str, Any)  # payload is marker_name, returns result
 
     # Assertions: things we verify
     domain_has_marker = assertion(MarkerCheck)
     trace_has_entry = assertion(TraceCheck)
+    trace_entry_matches = assertion(TraceEntryCheck)
+    trace_has_length = assertion(TraceLengthCheck)
+    query_returned_value = assertion(QueryResultCheck)
+    has_vocabulary = assertion(VocabularyCheck)
     adapter_is_complete = assertion(CompletenessCheck)
     proxy_rejects_wrong_kind = assertion(ProxyRestrictionCheck)

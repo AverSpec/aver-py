@@ -5,9 +5,11 @@ from averspec.adapter import AdapterBuilder
 from averspec.suite import Context, NarrativeProxy
 from averspec.domain import Marker, MarkerKind
 from averspec.trace import TraceEntry
-from tests.dogfood.domain import (
+from tests.acceptance.domain import (
     AverCore, DomainSpec, AdapterSpec, OperationCall, ProxyCall,
-    MarkerCheck, TraceCheck, ProxyRestrictionCheck, CompletenessCheck,
+    MarkerCheck, TraceCheck, TraceEntryCheck, TraceLengthCheck,
+    QueryResultCheck, VocabularyCheck,
+    ProxyRestrictionCheck, CompletenessCheck, FailingAssertionSpec,
     MarkerInfo,
 )
 
@@ -21,6 +23,7 @@ class AverWorkbench:
         self.current_builder = None
         self.current_context = None  # a Context from the inner domain
         self.inner_trace = []
+        self.last_query_results = {}  # marker_name -> result
 
 
 adapter = implement(AverCore, protocol=unit(lambda: AverWorkbench()))
@@ -78,7 +81,14 @@ def call_operation(wb: AverWorkbench, op: OperationCall):
     """Call a domain operation through the inner context's when proxy."""
     if wb.current_context is None:
         raise RuntimeError("No adapter created yet")
-    getattr(wb.current_context.when, op.marker_name)(op.payload)
+    marker = wb.current_domain._aver_markers[op.marker_name]
+    if marker.kind == MarkerKind.ACTION:
+        getattr(wb.current_context.when, op.marker_name)(op.payload)
+    elif marker.kind == MarkerKind.QUERY:
+        result = getattr(wb.current_context.query, op.marker_name)(op.payload)
+        wb.last_query_results[op.marker_name] = result
+    elif marker.kind == MarkerKind.ASSERTION:
+        getattr(wb.current_context.then, op.marker_name)(op.payload)
 
 
 @adapter.handle(AverCore.call_through_proxy)
@@ -88,6 +98,27 @@ def call_through_proxy(wb: AverWorkbench, call: ProxyCall):
         raise RuntimeError("No adapter created yet")
     proxy = getattr(wb.current_context, call.proxy_name)
     getattr(proxy, call.marker_name)(call.payload)
+
+
+@adapter.handle(AverCore.execute_failing_assertion)
+def execute_failing_assertion(wb: AverWorkbench, spec: FailingAssertionSpec):
+    """Replace the assertion handler with one that raises, then call it."""
+    if wb.current_context is None:
+        raise RuntimeError("No adapter created yet")
+
+    original = wb.current_adapter.handlers[spec.marker_name]
+
+    def failing_handler(ctx, payload):
+        raise AssertionError(f"Intentional failure in {spec.marker_name}")
+
+    wb.current_adapter.handlers[spec.marker_name] = failing_handler
+    try:
+        try:
+            getattr(wb.current_context.then, spec.marker_name)(spec.payload)
+        except AssertionError:
+            pass  # Expected — the trace records the failure status
+    finally:
+        wb.current_adapter.handlers[spec.marker_name] = original
 
 
 @adapter.handle(AverCore.get_markers)
@@ -107,6 +138,12 @@ def get_trace(wb: AverWorkbench, _):
     if wb.current_context is None:
         return []
     return wb.current_context.trace()
+
+
+@adapter.handle(AverCore.get_query_result)
+def get_query_result(wb: AverWorkbench, marker_name: str):
+    """Return the last query result for a given marker name."""
+    return wb.last_query_results.get(marker_name)
 
 
 @adapter.handle(AverCore.domain_has_marker)
@@ -132,6 +169,62 @@ def trace_has_entry(wb: AverWorkbench, check: TraceCheck):
     )
     assert entry.status == check.status, (
         f"Trace[{check.index}] status is '{entry.status}', expected '{check.status}'"
+    )
+
+
+@adapter.handle(AverCore.trace_entry_matches)
+def trace_entry_matches(wb: AverWorkbench, check: TraceEntryCheck):
+    """Assert that a trace entry matches kind, category, and status."""
+    trace = wb.current_context.trace()
+    assert check.index < len(trace), (
+        f"Trace has {len(trace)} entries, expected at least {check.index + 1}"
+    )
+    entry = trace[check.index]
+    assert entry.kind == check.kind, (
+        f"Trace[{check.index}] kind is '{entry.kind}', expected '{check.kind}'"
+    )
+    assert entry.category == check.category, (
+        f"Trace[{check.index}] category is '{entry.category}', expected '{check.category}'"
+    )
+    assert entry.status == check.status, (
+        f"Trace[{check.index}] status is '{entry.status}', expected '{check.status}'"
+    )
+
+
+@adapter.handle(AverCore.trace_has_length)
+def trace_has_length(wb: AverWorkbench, check: TraceLengthCheck):
+    """Assert the trace has exactly the expected number of entries."""
+    trace = wb.current_context.trace()
+    assert len(trace) == check.expected, (
+        f"Trace has {len(trace)} entries, expected {check.expected}"
+    )
+
+
+@adapter.handle(AverCore.query_returned_value)
+def query_returned_value(wb: AverWorkbench, check: QueryResultCheck):
+    """Assert that a query returned the expected value."""
+    actual = wb.last_query_results.get(check.marker_name)
+    assert actual == check.expected, (
+        f"Query '{check.marker_name}' returned {actual!r}, expected {check.expected!r}"
+    )
+
+
+@adapter.handle(AverCore.has_vocabulary)
+def has_vocabulary(wb: AverWorkbench, check: VocabularyCheck):
+    """Assert the domain has the expected number of actions, queries, assertions."""
+    markers = wb.current_domain._aver_markers
+    actual_actions = sum(1 for m in markers.values() if m.kind == MarkerKind.ACTION)
+    actual_queries = sum(1 for m in markers.values() if m.kind == MarkerKind.QUERY)
+    actual_assertions = sum(1 for m in markers.values() if m.kind == MarkerKind.ASSERTION)
+
+    assert actual_actions == check.actions, (
+        f"Expected {check.actions} actions, got {actual_actions}"
+    )
+    assert actual_queries == check.queries, (
+        f"Expected {check.queries} queries, got {actual_queries}"
+    )
+    assert actual_assertions == check.assertions, (
+        f"Expected {check.assertions} assertions, got {actual_assertions}"
     )
 
 

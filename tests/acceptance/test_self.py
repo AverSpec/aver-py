@@ -6,7 +6,7 @@ the framework does; the adapter exercises the real public API.
 """
 
 from averspec import suite
-from tests.dogfood.domain import (
+from tests.acceptance.domain import (
     AverCore, DomainSpec, AdapterSpec, OperationCall, ProxyCall,
     MarkerCheck, TraceCheck, ProxyRestrictionCheck, CompletenessCheck,
 )
