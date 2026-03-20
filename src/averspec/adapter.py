@@ -32,7 +32,12 @@ class Adapter:
     def execute_sync(self, marker_name: str, ctx: Any, payload: Any = None) -> Any:
         """Execute a handler, transparently handling async."""
         handler = self.handlers[marker_name]
-        if payload is not None:
+
+        # Determine if handler accepts a payload parameter
+        sig = inspect.signature(handler)
+        param_count = len(sig.parameters)
+
+        if param_count >= 2:
             result = handler(ctx, payload)
         else:
             result = handler(ctx)
