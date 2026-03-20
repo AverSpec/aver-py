@@ -7,6 +7,9 @@ dependencies = []
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
+http = ["httpx>=0.25"]
+playwright = ["playwright>=1.40"]
+all = ["httpx>=0.25", "playwright>=1.40"]
 
 [project.scripts]
 aver = "averspec.cli:main"
