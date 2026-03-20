@@ -21,6 +21,7 @@ class NarrativeProxy:
         trace: list[TraceEntry],
         category: str,
         allowed_kinds: set[MarkerKind],
+        called_markers: set[str] | None = None,
     ):
         self._domain = domain_cls
         self._adapter = adapter
@@ -28,6 +29,7 @@ class NarrativeProxy:
         self._trace = trace
         self._category = category
         self._allowed_kinds = allowed_kinds
+        self._called_markers = called_markers
 
     def __getattr__(self, name: str) -> Callable:
         markers = self._domain._aver_markers
@@ -46,6 +48,10 @@ class NarrativeProxy:
             )
 
         def invoke(payload=None):
+            # Track coverage
+            if self._called_markers is not None:
+                self._called_markers.add(name)
+
             start = time.perf_counter()
             try:
                 result = self._adapter.execute_sync(marker.name, self._ctx, payload)
@@ -87,26 +93,55 @@ class Context:
         self._trace_entries: list[TraceEntry] = []
         self._adapter = adapter
         self._protocol_ctx = protocol_ctx
+        self._domain_cls = domain_cls
+        self._called_markers: set[str] = set()
 
         self.given = NarrativeProxy(
             domain_cls, adapter, protocol_ctx, self._trace_entries,
             "given", {MarkerKind.ACTION, MarkerKind.ASSERTION},
+            self._called_markers,
         )
         self.when = NarrativeProxy(
             domain_cls, adapter, protocol_ctx, self._trace_entries,
             "when", {MarkerKind.ACTION},
+            self._called_markers,
         )
         self.then = NarrativeProxy(
             domain_cls, adapter, protocol_ctx, self._trace_entries,
             "then", {MarkerKind.ASSERTION},
+            self._called_markers,
         )
         self.query = NarrativeProxy(
             domain_cls, adapter, protocol_ctx, self._trace_entries,
             "query", {MarkerKind.QUERY},
+            self._called_markers,
         )
 
     def trace(self) -> list[TraceEntry]:
         return list(self._trace_entries)
+
+    def get_coverage(self) -> dict:
+        """Compute vocabulary coverage for the domain."""
+        markers = self._domain_cls._aver_markers
+        total_actions = [n for n, m in markers.items() if m.kind == MarkerKind.ACTION]
+        total_queries = [n for n, m in markers.items() if m.kind == MarkerKind.QUERY]
+        total_assertions = [n for n, m in markers.items() if m.kind == MarkerKind.ASSERTION]
+
+        called_actions = [n for n in total_actions if n in self._called_markers]
+        called_queries = [n for n in total_queries if n in self._called_markers]
+        called_assertions = [n for n in total_assertions if n in self._called_markers]
+
+        total = len(total_actions) + len(total_queries) + len(total_assertions)
+        called = len(called_actions) + len(called_queries) + len(called_assertions)
+        percentage = 100 if total == 0 else round((called / total) * 100)
+
+        return {
+            "domain": self._domain_cls._aver_domain_name,
+            "percentage": percentage,
+            "actions": {"total": total_actions, "called": called_actions},
+            "queries": {"total": total_queries, "called": called_queries},
+            "assertions": {"total": total_assertions, "called": called_assertions},
+        }
 
 
 class Suite:
@@ -130,6 +165,119 @@ class Suite:
         return fn
 
 
-def suite(domain_cls: type) -> Suite:
-    """Create a test suite for a domain."""
-    return Suite(domain_cls)
+# --- Composed suite support ---
+
+
+class NamespaceProxy:
+    """A namespace within a composed suite: ctx.admin.when.create_project()."""
+
+    def __init__(
+        self,
+        domain_cls: type,
+        adapter: Adapter,
+        protocol_ctx: Any,
+        trace: list[TraceEntry],
+    ):
+        self._domain = domain_cls
+        self._adapter = adapter
+        self._protocol_ctx = protocol_ctx
+        self._trace = trace
+
+        self.given = NarrativeProxy(
+            domain_cls, adapter, protocol_ctx, trace,
+            "given", {MarkerKind.ACTION, MarkerKind.ASSERTION},
+        )
+        self.when = NarrativeProxy(
+            domain_cls, adapter, protocol_ctx, trace,
+            "when", {MarkerKind.ACTION},
+        )
+        self.then = NarrativeProxy(
+            domain_cls, adapter, protocol_ctx, trace,
+            "then", {MarkerKind.ASSERTION},
+        )
+        self.query = NarrativeProxy(
+            domain_cls, adapter, protocol_ctx, trace,
+            "query", {MarkerKind.QUERY},
+        )
+
+
+class ComposedContext:
+    """Context for composed suites. Exposes namespaces and shared trace."""
+
+    def __init__(self, namespaces: dict[str, NamespaceProxy], trace: list[TraceEntry]):
+        self._namespaces = namespaces
+        self._trace_entries = trace
+
+    def __getattr__(self, name: str) -> Any:
+        if name.startswith("_"):
+            raise AttributeError(name)
+        ns = self._namespaces.get(name)
+        if ns is None:
+            raise AttributeError(f"No domain namespace '{name}' in composed suite")
+        return ns
+
+    def trace(self) -> list[TraceEntry]:
+        return list(self._trace_entries)
+
+
+def _create_composed_context(
+    config: dict[str, tuple[type, Adapter]],
+    protocol_contexts: dict[str, Any],
+    trace: list[TraceEntry],
+) -> ComposedContext:
+    """Build a ComposedContext from config entries and their protocol contexts."""
+    namespaces = {}
+    for ns_name, (domain_cls, adapter) in config.items():
+        proto_ctx = protocol_contexts[ns_name]
+        namespaces[ns_name] = NamespaceProxy(domain_cls, adapter, proto_ctx, trace)
+    return ComposedContext(namespaces, trace)
+
+
+def suite(domain_cls_or_config) -> Suite | ComposedSuite:
+    """Create a test suite.
+
+    Single domain: suite(MyDomain) -> Suite
+    Composed:      suite({"admin": (AdminDomain, admin_adapter), ...}) -> ComposedSuite
+    """
+    if isinstance(domain_cls_or_config, dict):
+        return ComposedSuite(domain_cls_or_config)
+    return Suite(domain_cls_or_config)
+
+
+class ComposedSuite:
+    """Multi-domain suite where each namespace dispatches to its own adapter."""
+
+    def __init__(self, config: dict[str, tuple[type, Adapter]]):
+        self._config = config
+        # Validate all entries are domains
+        for ns_name, (domain_cls, adapter) in config.items():
+            if not getattr(domain_cls, "_aver_is_domain", False):
+                raise TypeError(
+                    f"'{ns_name}' value is not a domain. "
+                    f"Decorate it with @domain first."
+                )
+
+    def run_test(self, fn: Callable) -> None:
+        """Execute a test function with composed context, handling protocol lifecycle."""
+        trace: list[TraceEntry] = []
+        protocol_contexts: dict[str, Any] = {}
+        setup_order: list[str] = []
+
+        try:
+            # Setup all protocols
+            for ns_name, (domain_cls, adapter) in self._config.items():
+                proto_ctx = adapter.protocol.setup()
+                protocol_contexts[ns_name] = proto_ctx
+                setup_order.append(ns_name)
+
+            # Build composed context
+            ctx = _create_composed_context(self._config, protocol_contexts, trace)
+            fn(ctx)
+
+        finally:
+            # Teardown in reverse order
+            for ns_name in reversed(setup_order):
+                domain_cls, adapter = self._config[ns_name]
+                proto_ctx = protocol_contexts.get(ns_name)
+                if proto_ctx is not None:
+                    adapter.protocol.teardown(proto_ctx)

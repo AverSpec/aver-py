@@ -88,6 +88,139 @@ def domain(name: str):
 
         cls.__init__ = _no_init
 
+        # Add extend() class method
+        @classmethod
+        def _extend(
+            klass,
+            ext_name: str,
+            *,
+            actions: dict[str, Any] | None = None,
+            queries: dict[str, Any] | None = None,
+            assertions: dict[str, Any] | None = None,
+        ):
+            """Create a new domain that inherits this domain's markers plus new ones."""
+            new_markers = {}
+            for source, kind in [
+                (actions or {}, MarkerKind.ACTION),
+                (queries or {}, MarkerKind.QUERY),
+                (assertions or {}, MarkerKind.ASSERTION),
+            ]:
+                for mk_name, mk in source.items():
+                    if not isinstance(mk, Marker):
+                        raise TypeError(
+                            f"Extension value for '{mk_name}' must be a Marker, "
+                            f"got {type(mk).__name__}"
+                        )
+                    if mk_name in markers:
+                        raise ValueError(
+                            f"Domain extension collision: '{mk_name}' already exists "
+                            f"in parent domain '{name}'"
+                        )
+                    new_markers[mk_name] = mk
+
+            # Build a new class dynamically
+            child_cls = type(ext_name, (), {})
+
+            # Copy parent markers
+            all_markers: dict[str, Marker] = {}
+            for mk_name, mk in markers.items():
+                setattr(child_cls, mk_name, mk)
+                all_markers[mk_name] = mk
+
+            # Add new markers, setting their name and domain_name
+            for mk_name, mk in new_markers.items():
+                mk.name = mk_name
+                mk.domain_name = ext_name
+                setattr(child_cls, mk_name, mk)
+                all_markers[mk_name] = mk
+
+            child_cls._aver_domain_name = ext_name
+            child_cls._aver_markers = all_markers
+            child_cls._aver_is_domain = True
+            child_cls._aver_parent = klass
+
+            def _child_no_init(self, *args, **kwargs):
+                raise TypeError(
+                    f"{ext_name} is a domain declaration and should not be instantiated."
+                )
+
+            child_cls.__init__ = _child_no_init
+
+            # Give child the extend ability too (recursive)
+            child_cls.extend = classmethod(
+                lambda child_klass, cn, *, actions=None, queries=None, assertions=None: _make_extend(
+                    child_cls, ext_name, all_markers
+                )(cn, actions=actions, queries=queries, assertions=assertions)
+            )
+
+            return child_cls
+
+        cls.extend = _extend
+
         return cls
 
     return decorator
+
+
+def _make_extend(parent_cls, parent_name, parent_markers):
+    """Build an extend function for a dynamically-created child domain."""
+
+    def _extend_child(
+        ext_name: str,
+        *,
+        actions: dict[str, Any] | None = None,
+        queries: dict[str, Any] | None = None,
+        assertions: dict[str, Any] | None = None,
+    ):
+        new_markers = {}
+        for source, kind in [
+            (actions or {}, MarkerKind.ACTION),
+            (queries or {}, MarkerKind.QUERY),
+            (assertions or {}, MarkerKind.ASSERTION),
+        ]:
+            for mk_name, mk in source.items():
+                if not isinstance(mk, Marker):
+                    raise TypeError(
+                        f"Extension value for '{mk_name}' must be a Marker, "
+                        f"got {type(mk).__name__}"
+                    )
+                if mk_name in parent_markers:
+                    raise ValueError(
+                        f"Domain extension collision: '{mk_name}' already exists "
+                        f"in parent domain '{parent_name}'"
+                    )
+                new_markers[mk_name] = mk
+
+        child_cls = type(ext_name, (), {})
+        all_markers: dict[str, Marker] = {}
+
+        for mk_name, mk in parent_markers.items():
+            setattr(child_cls, mk_name, mk)
+            all_markers[mk_name] = mk
+
+        for mk_name, mk in new_markers.items():
+            mk.name = mk_name
+            mk.domain_name = ext_name
+            setattr(child_cls, mk_name, mk)
+            all_markers[mk_name] = mk
+
+        child_cls._aver_domain_name = ext_name
+        child_cls._aver_markers = all_markers
+        child_cls._aver_is_domain = True
+        child_cls._aver_parent = parent_cls
+
+        def _child_no_init(self, *args, **kwargs):
+            raise TypeError(
+                f"{ext_name} is a domain declaration and should not be instantiated."
+            )
+
+        child_cls.__init__ = _child_no_init
+        child_cls.extend = classmethod(
+            lambda klass, cn, *, actions=None, queries=None, assertions=None: _make_extend(
+                child_cls, ext_name, all_markers
+            )(cn, actions=actions, queries=queries, assertions=assertions)
+        )
+
+        return child_cls
+
+    return _extend_child
