@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from averspec.config import get_registry
@@ -16,6 +18,18 @@ def pytest_generate_tests(metafunc):
 
     registry = get_registry()
     adapters = registry.find_adapters(suite.domain_cls)
+
+    # Filter by AVER_ADAPTER env var
+    adapter_filter = os.environ.get("AVER_ADAPTER")
+    if adapter_filter:
+        adapters = [a for a in adapters if a.name == adapter_filter]
+
+    # Filter by AVER_DOMAIN env var
+    domain_filter = os.environ.get("AVER_DOMAIN")
+    if domain_filter and suite.domain_cls._aver_domain_name != domain_filter:
+        # Skip this test entirely — domain doesn't match
+        metafunc.parametrize("_aver_adapter", [], ids=[])
+        return
 
     if not adapters:
         pytest.fail(
