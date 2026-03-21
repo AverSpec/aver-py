@@ -80,3 +80,14 @@ def define_config(
                 f"Expected Adapter or AdapterBuilder, got {type(adapter_or_builder).__name__}"
             )
         _registry.register_adapter(adapter)
+
+
+def snapshot_registry() -> dict:
+    """Capture current registry state."""
+    return {"adapters": list(_registry._adapters), "mode": _registry.teardown_failure_mode}
+
+
+def restore_registry(snapshot: dict) -> None:
+    """Restore registry to a previous state."""
+    _registry._adapters = list(snapshot["adapters"])
+    _registry.teardown_failure_mode = snapshot["mode"]

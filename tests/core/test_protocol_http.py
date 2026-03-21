@@ -101,6 +101,16 @@ class TestDebugLogging:
         assert "200" in captured.err
 
 
+class TestTrailingSlashStripped:
+    def test_strips_trailing_slash_from_base_url(self):
+        """http("http://localhost:3000/") should not double-slash when calling get("/tasks")."""
+        ctx = _make_ctx("http://localhost:3000/")
+        resp = ctx.get("/tasks")
+        data = resp.json()
+        assert data["url"] == "http://localhost:3000/tasks"
+        assert "//" not in data["url"].replace("http://", "", 1)
+
+
 class TestHttpProtocolFactory:
     def test_factory_returns_protocol(self):
         proto = http("http://localhost:8080")

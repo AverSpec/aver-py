@@ -4,7 +4,7 @@ from averspec.domain import domain, action, query, assertion, Marker, MarkerKind
 from averspec.adapter import implement, adapt
 from averspec.suite import suite, Context, ComposedSuite
 from averspec.protocol import Protocol, TelemetryCollector, unit, with_fixture, TestMetadata, TestCompletion, Attachment
-from averspec.config import define_config
+from averspec.config import define_config, snapshot_registry, restore_registry
 from averspec.trace import TraceEntry
 from averspec.eventually import eventually
 from averspec.trace_format import format_trace
@@ -54,6 +54,8 @@ __all__ = [
     "TestCompletion",
     "Attachment",
     "define_config",
+    "snapshot_registry",
+    "restore_registry",
     "TraceEntry",
     "eventually",
     "format_trace",
