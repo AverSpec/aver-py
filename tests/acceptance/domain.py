@@ -102,6 +102,56 @@ class FailingAssertionSpec:
     payload: Any = None
 
 
+# --- Coverage payloads ---
+
+@dataclass
+class CoverageCheck:
+    """Check coverage percentage for the current inner domain."""
+    expected_percentage: int
+
+
+# --- Telemetry payloads ---
+
+@dataclass
+class TelemetryDomainSpec:
+    """Specification for creating a domain with telemetry declarations."""
+    name: str
+    actions: list[str]
+    span_names: list[str]  # parallel to actions: span name per action
+
+
+@dataclass
+class TelemetryAdapterSpec:
+    """Specification for creating an adapter with a telemetry collector."""
+    pass
+
+
+@dataclass
+class TelemetrySpanCheck:
+    """Check that a trace entry has a telemetry match result."""
+    index: int
+    expected_span: str
+    matched: bool
+
+
+# --- Extension payloads ---
+
+@dataclass
+class ExtensionSpec:
+    """Specification for extending a domain."""
+    child_name: str
+    new_actions: list[str]
+    new_queries: list[str]
+    new_assertions: list[str]
+
+
+@dataclass
+class ExtensionMarkerCheck:
+    """Check that the extended domain has markers from parent and child."""
+    parent_marker_names: list[str]
+    child_marker_names: list[str]
+
+
 # --- Results ---
 
 @dataclass
@@ -127,10 +177,25 @@ class AverCore:
     call_through_proxy = action(ProxyCall)
     execute_failing_assertion = action(FailingAssertionSpec)
 
+    # Coverage actions
+    define_domain_for_coverage = action(DomainSpec)
+    create_adapter_for_coverage = action(AdapterSpec)
+    call_coverage_operation = action(OperationCall)
+
+    # Telemetry actions
+    define_telemetry_domain = action(TelemetryDomainSpec)
+    create_telemetry_adapter = action(TelemetryAdapterSpec)
+    call_telemetry_operation = action(OperationCall)
+
+    # Extension actions
+    extend_domain = action(ExtensionSpec)
+
     # Queries: things we can inspect
     get_markers = query(type(None), list)
     get_trace = query(type(None), list)
     get_query_result = query(str, Any)  # payload is marker_name, returns result
+    get_coverage_percentage = query(type(None), int)
+    get_extension_markers = query(type(None), list)
 
     # Assertions: things we verify
     domain_has_marker = assertion(MarkerCheck)
@@ -141,3 +206,6 @@ class AverCore:
     has_vocabulary = assertion(VocabularyCheck)
     adapter_is_complete = assertion(CompletenessCheck)
     proxy_rejects_wrong_kind = assertion(ProxyRestrictionCheck)
+    coverage_is = assertion(CoverageCheck)
+    telemetry_span_matched = assertion(TelemetrySpanCheck)
+    extension_has_markers = assertion(ExtensionMarkerCheck)

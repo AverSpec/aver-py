@@ -5,12 +5,17 @@ from averspec.adapter import AdapterBuilder
 from averspec.suite import Context, NarrativeProxy
 from averspec.domain import Marker, MarkerKind
 from averspec.trace import TraceEntry
+from averspec.telemetry_types import TelemetryExpectation, CollectedSpan, TelemetryMatchResult
+from averspec.protocol import Protocol, TelemetryCollector
 from tests.acceptance.domain import (
     AverCore, DomainSpec, AdapterSpec, OperationCall, ProxyCall,
     MarkerCheck, TraceCheck, TraceEntryCheck, TraceLengthCheck,
     QueryResultCheck, VocabularyCheck,
     ProxyRestrictionCheck, CompletenessCheck, FailingAssertionSpec,
     MarkerInfo,
+    CoverageCheck,
+    TelemetryDomainSpec, TelemetryAdapterSpec, TelemetrySpanCheck,
+    ExtensionSpec, ExtensionMarkerCheck,
 )
 
 
@@ -24,6 +29,20 @@ class AverWorkbench:
         self.current_context = None  # a Context from the inner domain
         self.inner_trace = []
         self.last_query_results = {}  # marker_name -> result
+
+        # Coverage tracking workspace
+        self.coverage_domain = None
+        self.coverage_adapter = None
+        self.coverage_context = None
+
+        # Telemetry workspace
+        self.telemetry_domain = None
+        self.telemetry_adapter = None
+        self.telemetry_context = None
+        self.telemetry_collector = None
+
+        # Extension workspace
+        self.extended_domain = None
 
 
 adapter = implement(AverCore, protocol=unit(lambda: AverWorkbench()))
@@ -266,3 +285,238 @@ def proxy_rejects_wrong_kind(wb: AverWorkbench, check: ProxyRestrictionCheck):
         assert False, f"Expected TypeError from ctx.{check.proxy_name}.{check.marker_name}"
     except TypeError:
         pass  # Expected
+
+
+# --- Coverage handlers ---
+
+@adapter.handle(AverCore.define_domain_for_coverage)
+def define_domain_for_coverage(wb: AverWorkbench, spec: DomainSpec):
+    """Create a domain in the coverage workspace."""
+    attrs = {}
+    for name in spec.actions:
+        attrs[name] = action(str)
+    for name in spec.queries:
+        attrs[name] = query(str, str)
+    for name in spec.assertions:
+        attrs[name] = assertion(str)
+
+    cls = type(f"CoverageDomain_{spec.name}", (), attrs)
+    domain_decorator(spec.name)(cls)
+    wb.coverage_domain = cls
+
+
+@adapter.handle(AverCore.create_adapter_for_coverage)
+def create_adapter_for_coverage(wb: AverWorkbench, spec: AdapterSpec):
+    """Create an adapter in the coverage workspace."""
+    if wb.coverage_domain is None:
+        raise RuntimeError("No coverage domain defined yet")
+
+    builder = implement(wb.coverage_domain, protocol=unit(lambda: {}))
+
+    for name, marker in wb.coverage_domain._aver_markers.items():
+        if marker.kind == MarkerKind.ACTION:
+            @builder.handle(marker)
+            def action_handler(ctx, payload, _name=name):
+                pass
+        elif marker.kind == MarkerKind.QUERY:
+            @builder.handle(marker)
+            def query_handler(ctx, payload, _name=name):
+                return f"result-{_name}"
+        elif marker.kind == MarkerKind.ASSERTION:
+            @builder.handle(marker)
+            def assertion_handler(ctx, payload, _name=name):
+                pass
+
+    wb.coverage_adapter = builder.build()
+    inner_ctx = wb.coverage_adapter.protocol.setup()
+    wb.coverage_context = Context(wb.coverage_domain, wb.coverage_adapter, inner_ctx)
+
+
+@adapter.handle(AverCore.call_coverage_operation)
+def call_coverage_operation(wb: AverWorkbench, op: OperationCall):
+    """Call a domain operation in the coverage workspace."""
+    if wb.coverage_context is None:
+        raise RuntimeError("No coverage adapter created yet")
+    marker = wb.coverage_domain._aver_markers[op.marker_name]
+    if marker.kind == MarkerKind.ACTION:
+        getattr(wb.coverage_context.when, op.marker_name)(op.payload)
+    elif marker.kind == MarkerKind.QUERY:
+        getattr(wb.coverage_context.query, op.marker_name)(op.payload)
+    elif marker.kind == MarkerKind.ASSERTION:
+        getattr(wb.coverage_context.then, op.marker_name)(op.payload)
+
+
+@adapter.handle(AverCore.get_coverage_percentage)
+def get_coverage_percentage(wb: AverWorkbench, _):
+    """Return coverage percentage from the coverage workspace."""
+    if wb.coverage_context is None:
+        return 100  # No domain = 100%
+    coverage = wb.coverage_context.get_coverage()
+    return coverage["percentage"]
+
+
+@adapter.handle(AverCore.coverage_is)
+def coverage_is(wb: AverWorkbench, check: CoverageCheck):
+    """Assert that coverage percentage matches expected."""
+    if wb.coverage_context is None:
+        actual = 100
+    else:
+        actual = wb.coverage_context.get_coverage()["percentage"]
+    assert actual == check.expected_percentage, (
+        f"Coverage is {actual}%, expected {check.expected_percentage}%"
+    )
+
+
+# --- Telemetry handlers ---
+
+class _StubCollector(TelemetryCollector):
+    """In-memory telemetry collector for testing."""
+
+    def __init__(self):
+        self._spans: list[CollectedSpan] = []
+
+    def get_spans(self) -> list[CollectedSpan]:
+        return list(self._spans)
+
+    def reset(self) -> None:
+        self._spans.clear()
+
+    def add_span(self, span: CollectedSpan) -> None:
+        self._spans.append(span)
+
+
+class _TelemetryProtocol(Protocol):
+    """Protocol with a telemetry collector attached."""
+    name = "telemetry-test"
+
+    def __init__(self):
+        self.telemetry = _StubCollector()
+
+    def setup(self):
+        return {}
+
+    def teardown(self, ctx):
+        pass
+
+
+@adapter.handle(AverCore.define_telemetry_domain)
+def define_telemetry_domain(wb: AverWorkbench, spec: TelemetryDomainSpec):
+    """Create a domain with telemetry declarations."""
+    attrs = {}
+    for act_name, span_name in zip(spec.actions, spec.span_names):
+        attrs[act_name] = action(str, telemetry=TelemetryExpectation(span=span_name))
+
+    cls = type(f"TelemetryDomain_{spec.name}", (), attrs)
+    domain_decorator(spec.name)(cls)
+    wb.telemetry_domain = cls
+
+
+@adapter.handle(AverCore.create_telemetry_adapter)
+def create_telemetry_adapter(wb: AverWorkbench, _):
+    """Create an adapter with a telemetry collector for the telemetry domain."""
+    if wb.telemetry_domain is None:
+        raise RuntimeError("No telemetry domain defined yet")
+
+    proto = _TelemetryProtocol()
+    wb.telemetry_collector = proto.telemetry
+
+    builder = implement(wb.telemetry_domain, protocol=proto)
+
+    for name, marker in wb.telemetry_domain._aver_markers.items():
+        tel = marker.telemetry
+
+        @builder.handle(marker)
+        def handler(ctx, payload, _tel=tel, _collector=wb.telemetry_collector):
+            # Simulate: the adapter injects a matching span
+            if _tel is not None and isinstance(_tel, TelemetryExpectation):
+                _collector.add_span(CollectedSpan(
+                    trace_id="trace-001",
+                    span_id=f"span-{_tel.span}",
+                    name=_tel.span,
+                    attributes=dict(_tel.attributes),
+                ))
+
+    wb.telemetry_adapter = builder.build()
+    inner_ctx = wb.telemetry_adapter.protocol.setup()
+    wb.telemetry_context = Context(wb.telemetry_domain, wb.telemetry_adapter, inner_ctx)
+
+
+@adapter.handle(AverCore.call_telemetry_operation)
+def call_telemetry_operation(wb: AverWorkbench, op: OperationCall):
+    """Call an operation through the telemetry context."""
+    if wb.telemetry_context is None:
+        raise RuntimeError("No telemetry adapter created yet")
+    marker = wb.telemetry_domain._aver_markers[op.marker_name]
+    if marker.kind == MarkerKind.ACTION:
+        getattr(wb.telemetry_context.when, op.marker_name)(op.payload)
+
+
+@adapter.handle(AverCore.telemetry_span_matched)
+def telemetry_span_matched(wb: AverWorkbench, check: TelemetrySpanCheck):
+    """Assert that a trace entry has a telemetry match result."""
+    if wb.telemetry_context is None:
+        raise RuntimeError("No telemetry context")
+    trace = wb.telemetry_context.trace()
+    assert check.index < len(trace), (
+        f"Trace has {len(trace)} entries, expected at least {check.index + 1}"
+    )
+    entry = trace[check.index]
+    assert entry.telemetry is not None, (
+        f"Trace[{check.index}] has no telemetry result"
+    )
+    assert entry.telemetry.expected.span == check.expected_span, (
+        f"Expected span '{check.expected_span}', got '{entry.telemetry.expected.span}'"
+    )
+    assert entry.telemetry.matched == check.matched, (
+        f"Expected matched={check.matched}, got matched={entry.telemetry.matched}"
+    )
+
+
+# --- Extension handlers ---
+
+@adapter.handle(AverCore.extend_domain)
+def extend_domain(wb: AverWorkbench, spec: ExtensionSpec):
+    """Extend the current domain with new markers."""
+    if wb.current_domain is None:
+        raise RuntimeError("No domain defined yet")
+
+    new_actions = {n: action(str) for n in spec.new_actions}
+    new_queries = {n: query(str, str) for n in spec.new_queries}
+    new_assertions = {n: assertion(str) for n in spec.new_assertions}
+
+    wb.extended_domain = wb.current_domain.extend(
+        spec.child_name,
+        actions=new_actions,
+        queries=new_queries,
+        assertions=new_assertions,
+    )
+
+
+@adapter.handle(AverCore.get_extension_markers)
+def get_extension_markers(wb: AverWorkbench, _):
+    """Return marker info from the extended domain."""
+    if wb.extended_domain is None:
+        return []
+    return [
+        MarkerInfo(name=m.name, kind=m.kind.value, domain_name=m.domain_name)
+        for m in wb.extended_domain._aver_markers.values()
+    ]
+
+
+@adapter.handle(AverCore.extension_has_markers)
+def extension_has_markers(wb: AverWorkbench, check: ExtensionMarkerCheck):
+    """Assert the extended domain has both parent and child markers."""
+    if wb.extended_domain is None:
+        raise RuntimeError("No extended domain")
+
+    marker_names = set(wb.extended_domain._aver_markers.keys())
+
+    for name in check.parent_marker_names:
+        assert name in marker_names, (
+            f"Extended domain missing parent marker '{name}'. Has: {marker_names}"
+        )
+
+    for name in check.child_marker_names:
+        assert name in marker_names, (
+            f"Extended domain missing child marker '{name}'. Has: {marker_names}"
+        )
