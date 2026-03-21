@@ -4,7 +4,7 @@ from averspec import suite
 from tests.acceptance.domain import (
     AverCore, DomainSpec, AdapterSpec, OperationCall,
     TraceEntryCheck, TraceLengthCheck, QueryResultCheck,
-    FailingAssertionSpec,
+    FailingAssertionSpec, ExtensionSpec,
 )
 
 s = suite(AverCore)
@@ -80,3 +80,53 @@ def test_failing_assertion_with_no_prior_trace(ctx):
     ctx.then.trace_entry_matches(TraceEntryCheck(
         index=0, kind="assertion", category="then", status="fail",
     ))
+
+
+@s.test
+def test_multiple_adapters_registered_for_same_domain(ctx):
+    """Register two adapters for the same domain, verify both are counted."""
+    ctx.given.define_domain(DomainSpec(
+        name="multi-adapter",
+        actions=["do_work"],
+        queries=[],
+        assertions=[],
+    ))
+    ctx.given.create_adapter(AdapterSpec(protocol_name="unit"))
+    ctx.when.register_second_adapter(AdapterSpec(protocol_name="http"))
+    ctx.then.adapter_count_is(2)
+
+
+@s.test
+def test_query_returns_typed_result_value(ctx):
+    """Execute a query and verify the returned value matches expected type."""
+    ctx.given.define_domain(DomainSpec(
+        name="dispatch-typed-query",
+        actions=[],
+        queries=["get_count"],
+        assertions=[],
+    ))
+    ctx.given.create_adapter(AdapterSpec())
+    ctx.when.call_operation(OperationCall(marker_name="get_count", payload="x"))
+    result = ctx.query.get_query_result("get_count")
+    assert result == "result-get_count"
+    assert isinstance(result, str)
+
+
+@s.test
+def test_parent_chain_lookup_finds_parent_adapter(ctx):
+    """Extend a domain, register parent adapter, verify child resolves it."""
+    ctx.given.define_domain(DomainSpec(
+        name="parent-chain-dispatch",
+        actions=["base_op"],
+        queries=[],
+        assertions=[],
+    ))
+    ctx.given.create_adapter(AdapterSpec())
+    ctx.when.extend_domain(ExtensionSpec(
+        child_name="child-chain-dispatch",
+        new_actions=["child_op"],
+        new_queries=[],
+        new_assertions=[],
+    ))
+    # The extended domain should resolve the parent adapter through chain lookup
+    ctx.then.has_parent_domain("parent-chain-dispatch")

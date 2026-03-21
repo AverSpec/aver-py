@@ -66,3 +66,21 @@ def test_extension_preserves_marker_count(ctx):
     ))
     markers = ctx.query.get_extension_markers()
     assert len(markers) == 6
+
+
+@s.test
+def test_extension_tracks_parent(ctx):
+    """An extended domain reports its parent domain name."""
+    ctx.given.define_domain(DomainSpec(
+        name="ext-parent-track",
+        actions=[],
+        queries=[],
+        assertions=[],
+    ))
+    ctx.when.extend_domain(ExtensionSpec(
+        child_name="ext-child-track",
+        new_actions=["extra"],
+        new_queries=[],
+        new_assertions=[],
+    ))
+    ctx.then.has_parent_domain("ext-parent-track")

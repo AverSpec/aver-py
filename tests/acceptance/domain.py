@@ -152,6 +152,42 @@ class ExtensionMarkerCheck:
     child_marker_names: list[str]
 
 
+# --- Contract verification payloads ---
+
+@dataclass
+class ContractSpanSpec:
+    """A span in a contract specification."""
+    name: str
+    attributes: dict = field(default_factory=dict)  # attr_key -> {kind, value?, symbol?}
+
+
+@dataclass
+class ContractDomainSpec:
+    """Specification for contract verification test domain."""
+    domain_name: str
+    actions: list[str]
+    span_names: list[str]  # parallel to actions
+    span_attributes: list[dict] = field(default_factory=list)  # parallel to actions
+    parameterized: bool = False
+
+
+@dataclass
+class ContractTraceSpec:
+    """Pre-configured production spans for verification."""
+    spans: list[dict] = field(default_factory=list)  # list of {name, attributes, trace_id?, span_id?}
+
+
+@dataclass
+class CoverageBreakdownCheck:
+    """Check per-kind coverage breakdown."""
+    actions_called: int
+    actions_total: int
+    queries_called: int
+    queries_total: int
+    assertions_called: int
+    assertions_total: int
+
+
 # --- Results ---
 
 @dataclass
@@ -190,12 +226,27 @@ class AverCore:
     # Extension actions
     extend_domain = action(ExtensionSpec)
 
+    # Multi-adapter actions
+    register_second_adapter = action(AdapterSpec)
+
+    # Contract verification actions
+    setup_contract_workbench = action(type(None))
+    define_contract_domain = action(type(None))  # uses ContractDomainSpec
+    create_contract_adapter = action(type(None))
+    run_contract_operations = action(type(None))
+    extract_and_write_contract = action(type(None))
+    load_and_verify_contract = action(type(None))
+
     # Queries: things we can inspect
     get_markers = query(type(None), list)
     get_trace = query(type(None), list)
     get_query_result = query(str, Any)  # payload is marker_name, returns result
     get_coverage_percentage = query(type(None), int)
     get_extension_markers = query(type(None), list)
+    get_adapter_count = query(type(None), int)
+    get_coverage_detail = query(type(None), dict)
+    get_contract_violations = query(type(None), int)
+    get_violation_details = query(type(None), list)
 
     # Assertions: things we verify
     domain_has_marker = assertion(MarkerCheck)
@@ -209,3 +260,9 @@ class AverCore:
     coverage_is = assertion(CoverageCheck)
     telemetry_span_matched = assertion(TelemetrySpanCheck)
     extension_has_markers = assertion(ExtensionMarkerCheck)
+    contract_passes = assertion(type(None))
+    contract_has_violations = assertion(type(None))
+    violation_includes = assertion(str)  # violation kind
+    has_parent_domain = assertion(str)  # parent domain name
+    adapter_count_is = assertion(int)
+    coverage_breakdown_matches = assertion(type(None))  # uses CoverageBreakdownCheck

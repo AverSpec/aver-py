@@ -16,6 +16,8 @@ from tests.acceptance.domain import (
     CoverageCheck,
     TelemetryDomainSpec, TelemetryAdapterSpec, TelemetrySpanCheck,
     ExtensionSpec, ExtensionMarkerCheck,
+    ContractDomainSpec, ContractTraceSpec, ContractSpanSpec,
+    CoverageBreakdownCheck,
 )
 
 
@@ -43,6 +45,20 @@ class AverWorkbench:
 
         # Extension workspace
         self.extended_domain = None
+
+        # Multi-adapter workspace
+        self.second_adapter = None
+
+        # Contract verification workspace
+        self.contract_tmp_dir = None
+        self.contract_domain = None
+        self.contract_adapter = None
+        self.contract_context = None
+        self.contract_collector = None
+        self.contract_domain_spec = None
+        self.contract_trace_spec = None
+        self.contract_result = None  # ConformanceReport
+        self.contract_written_paths = []
 
 
 adapter = implement(AverCore, protocol=unit(lambda: AverWorkbench()))
@@ -520,3 +536,316 @@ def extension_has_markers(wb: AverWorkbench, check: ExtensionMarkerCheck):
         assert name in marker_names, (
             f"Extended domain missing child marker '{name}'. Has: {marker_names}"
         )
+
+
+# --- Multi-adapter handlers ---
+
+@adapter.handle(AverCore.register_second_adapter)
+def register_second_adapter(wb: AverWorkbench, spec: AdapterSpec):
+    """Register a second adapter for the same domain with a different protocol."""
+    if wb.current_domain is None:
+        raise RuntimeError("No domain defined yet")
+
+    builder = implement(wb.current_domain, protocol=unit(lambda: {}, name=spec.protocol_name))
+
+    for name, marker in wb.current_domain._aver_markers.items():
+        if marker.kind == MarkerKind.ACTION:
+            @builder.handle(marker)
+            def action_handler(ctx, payload, _name=name):
+                pass
+        elif marker.kind == MarkerKind.QUERY:
+            @builder.handle(marker)
+            def query_handler(ctx, payload, _name=name):
+                return f"result-{_name}"
+        elif marker.kind == MarkerKind.ASSERTION:
+            @builder.handle(marker)
+            def assertion_handler(ctx, payload, _name=name):
+                pass
+
+    wb.second_adapter = builder.build()
+
+
+@adapter.handle(AverCore.get_adapter_count)
+def get_adapter_count(wb: AverWorkbench, _):
+    """Return how many adapters exist for the current domain."""
+    count = 1 if wb.current_adapter is not None else 0
+    if wb.second_adapter is not None:
+        count += 1
+    return count
+
+
+@adapter.handle(AverCore.adapter_count_is)
+def adapter_count_is(wb: AverWorkbench, expected: int):
+    """Assert the number of adapters for the current domain."""
+    count = 1 if wb.current_adapter is not None else 0
+    if wb.second_adapter is not None:
+        count += 1
+    assert count == expected, f"Expected {expected} adapters, got {count}"
+
+
+# --- Coverage detail handlers ---
+
+@adapter.handle(AverCore.get_coverage_detail)
+def get_coverage_detail(wb: AverWorkbench, _):
+    """Return full coverage breakdown from the coverage workspace."""
+    if wb.coverage_context is None:
+        return {"percentage": 100, "actions": {"total": [], "called": []},
+                "queries": {"total": [], "called": []},
+                "assertions": {"total": [], "called": []}}
+    return wb.coverage_context.get_coverage()
+
+
+@adapter.handle(AverCore.coverage_breakdown_matches)
+def coverage_breakdown_matches(wb: AverWorkbench, check: CoverageBreakdownCheck):
+    """Assert that per-kind coverage breakdown matches expected counts."""
+    if wb.coverage_context is None:
+        cov = {"actions": {"total": [], "called": []},
+               "queries": {"total": [], "called": []},
+               "assertions": {"total": [], "called": []}}
+    else:
+        cov = wb.coverage_context.get_coverage()
+
+    assert len(cov["actions"]["called"]) == check.actions_called, (
+        f"Expected {check.actions_called} actions called, got {len(cov['actions']['called'])}"
+    )
+    assert len(cov["actions"]["total"]) == check.actions_total, (
+        f"Expected {check.actions_total} total actions, got {len(cov['actions']['total'])}"
+    )
+    assert len(cov["queries"]["called"]) == check.queries_called, (
+        f"Expected {check.queries_called} queries called, got {len(cov['queries']['called'])}"
+    )
+    assert len(cov["queries"]["total"]) == check.queries_total, (
+        f"Expected {check.queries_total} total queries, got {len(cov['queries']['total'])}"
+    )
+    assert len(cov["assertions"]["called"]) == check.assertions_called, (
+        f"Expected {check.assertions_called} assertions called, got {len(cov['assertions']['called'])}"
+    )
+    assert len(cov["assertions"]["total"]) == check.assertions_total, (
+        f"Expected {check.assertions_total} total assertions, got {len(cov['assertions']['total'])}"
+    )
+
+
+# --- Domain parent assertion ---
+
+@adapter.handle(AverCore.has_parent_domain)
+def has_parent_domain(wb: AverWorkbench, parent_name: str):
+    """Assert that the extended domain tracks its parent."""
+    if wb.extended_domain is None:
+        raise RuntimeError("No extended domain")
+    parent = getattr(wb.extended_domain, "_aver_parent", None)
+    assert parent is not None, "Extended domain has no parent"
+    assert parent._aver_domain_name == parent_name, (
+        f"Expected parent '{parent_name}', got '{parent._aver_domain_name}'"
+    )
+
+
+# --- Contract verification handlers ---
+
+import tempfile
+import os
+from averspec.telemetry_contract import (
+    extract_contract, BehavioralContract, ContractEntry,
+    SpanExpectation, AttributeBinding,
+)
+from averspec.telemetry_verify import (
+    verify_contract, ProductionTrace, ProductionSpan, ConformanceReport,
+)
+from averspec.contract_io import write_contracts, read_contracts, read_contract_file
+
+
+@adapter.handle(AverCore.setup_contract_workbench)
+def setup_contract_workbench(wb: AverWorkbench, _):
+    """Create a temp directory for contract files."""
+    wb.contract_tmp_dir = tempfile.mkdtemp(prefix="aver-contract-")
+
+
+@adapter.handle(AverCore.define_contract_domain)
+def define_contract_domain(wb: AverWorkbench, spec: ContractDomainSpec):
+    """Create a domain with telemetry for contract verification."""
+    wb.contract_domain_spec = spec
+    attrs = {}
+    for i, act_name in enumerate(spec.actions):
+        span_name = spec.span_names[i] if i < len(spec.span_names) else act_name
+        span_attrs = spec.span_attributes[i] if i < len(spec.span_attributes) else {}
+
+        if spec.parameterized:
+            # Parameterized telemetry: a callable that takes payload and returns TelemetryExpectation
+            def make_tel_fn(sn, sa):
+                def tel_fn(p):
+                    resolved = {}
+                    for k, v in sa.items():
+                        if isinstance(v, str) and v.startswith("$"):
+                            field_name = v[1:]
+                            resolved[k] = getattr(p, field_name, p.get(field_name) if isinstance(p, dict) else v)
+                        else:
+                            resolved[k] = v
+                    return TelemetryExpectation(span=sn, attributes=resolved)
+                return tel_fn
+            attrs[act_name] = action(dict, telemetry=make_tel_fn(span_name, span_attrs))
+        else:
+            # Static telemetry
+            attrs[act_name] = action(str, telemetry=TelemetryExpectation(
+                span=span_name, attributes=dict(span_attrs),
+            ))
+
+    cls = type(f"ContractDomain_{spec.domain_name}", (), attrs)
+    domain_decorator(spec.domain_name)(cls)
+    wb.contract_domain = cls
+
+
+@adapter.handle(AverCore.create_contract_adapter)
+def create_contract_adapter(wb: AverWorkbench, trace_spec: ContractTraceSpec):
+    """Create adapter with a stub TelemetryCollector that returns pre-configured spans."""
+    if wb.contract_domain is None:
+        raise RuntimeError("No contract domain defined yet")
+
+    collector = _StubCollector()
+    wb.contract_collector = collector
+
+    # Pre-load the collector with the provided spans
+    for span_dict in trace_spec.spans:
+        collector.add_span(CollectedSpan(
+            trace_id=span_dict.get("trace_id", "trace-001"),
+            span_id=span_dict.get("span_id", f"span-{span_dict['name']}"),
+            name=span_dict["name"],
+            attributes=span_dict.get("attributes", {}),
+        ))
+
+    proto = _TelemetryProtocol()
+    proto.telemetry = collector
+
+    builder = implement(wb.contract_domain, protocol=proto)
+
+    for name, marker in wb.contract_domain._aver_markers.items():
+        @builder.handle(marker)
+        def handler(ctx, payload, _name=name):
+            pass  # The collector already has spans pre-loaded
+
+    wb.contract_adapter = builder.build()
+    inner_ctx = wb.contract_adapter.protocol.setup()
+    wb.contract_context = Context(wb.contract_domain, wb.contract_adapter, inner_ctx)
+
+
+@adapter.handle(AverCore.run_contract_operations)
+def run_contract_operations(wb: AverWorkbench, _):
+    """Execute all actions through the inner contract suite."""
+    if wb.contract_context is None:
+        raise RuntimeError("No contract adapter created yet")
+    for name, marker in wb.contract_domain._aver_markers.items():
+        if marker.kind == MarkerKind.ACTION:
+            getattr(wb.contract_context.when, name)("test-payload")
+
+
+@adapter.handle(AverCore.extract_and_write_contract)
+def extract_and_write_contract(wb: AverWorkbench, _):
+    """Extract contract from traces and write to tmp dir."""
+    if wb.contract_context is None:
+        raise RuntimeError("No contract context")
+    if wb.contract_tmp_dir is None:
+        raise RuntimeError("No contract tmp dir")
+
+    trace = wb.contract_context.trace()
+    results = [{"test_name": "contract-test", "trace": trace}]
+
+    contract = extract_contract(wb.contract_domain, results)
+    wb.contract_written_paths = write_contracts(contract, wb.contract_tmp_dir)
+
+
+@adapter.handle(AverCore.load_and_verify_contract)
+def load_and_verify_contract(wb: AverWorkbench, prod_trace_spec: ContractTraceSpec):
+    """Read contract back and verify against production traces."""
+    if wb.contract_tmp_dir is None:
+        raise RuntimeError("No contract tmp dir")
+
+    contracts = read_contracts(wb.contract_tmp_dir)
+    if not contracts:
+        # Create a conformance report with a violation
+        wb.contract_result = ConformanceReport(
+            domain="unknown",
+            results=[],
+            total_violations=1,
+        )
+        return
+
+    # Build production traces from spec
+    # Group spans by trace_id
+    trace_map: dict[str, list[ProductionSpan]] = {}
+    for span_dict in prod_trace_spec.spans:
+        tid = span_dict.get("trace_id", "trace-001")
+        if tid not in trace_map:
+            trace_map[tid] = []
+        trace_map[tid].append(ProductionSpan(
+            name=span_dict["name"],
+            attributes=span_dict.get("attributes", {}),
+            span_id=span_dict.get("span_id"),
+        ))
+
+    prod_traces = [
+        ProductionTrace(trace_id=tid, spans=spans)
+        for tid, spans in trace_map.items()
+    ]
+
+    # Verify all contracts
+    all_violations = 0
+    all_results = []
+    for contract in contracts:
+        report = verify_contract(contract, prod_traces)
+        all_violations += report.total_violations
+        all_results.extend(report.results)
+
+    wb.contract_result = ConformanceReport(
+        domain=contracts[0].domain if contracts else "unknown",
+        results=all_results,
+        total_violations=all_violations,
+    )
+
+
+@adapter.handle(AverCore.get_contract_violations)
+def get_contract_violations(wb: AverWorkbench, _):
+    """Return violation count from last verification."""
+    if wb.contract_result is None:
+        return 0
+    return wb.contract_result.total_violations
+
+
+@adapter.handle(AverCore.get_violation_details)
+def get_violation_details(wb: AverWorkbench, _):
+    """Return list of violation kinds from last verification."""
+    if wb.contract_result is None:
+        return []
+    kinds = []
+    for r in wb.contract_result.results:
+        for v in r.violations:
+            kinds.append(v.kind)
+    return kinds
+
+
+@adapter.handle(AverCore.contract_passes)
+def contract_passes(wb: AverWorkbench, _):
+    """Assert 0 violations."""
+    assert wb.contract_result is not None, "No contract verification result"
+    assert wb.contract_result.total_violations == 0, (
+        f"Expected 0 violations, got {wb.contract_result.total_violations}"
+    )
+
+
+@adapter.handle(AverCore.contract_has_violations)
+def contract_has_violations(wb: AverWorkbench, _):
+    """Assert violation count > 0."""
+    assert wb.contract_result is not None, "No contract verification result"
+    assert wb.contract_result.total_violations > 0, (
+        f"Expected violations but got 0"
+    )
+
+
+@adapter.handle(AverCore.violation_includes)
+def violation_includes(wb: AverWorkbench, kind: str):
+    """Assert a specific violation kind exists."""
+    assert wb.contract_result is not None, "No contract verification result"
+    all_kinds = []
+    for r in wb.contract_result.results:
+        for v in r.violations:
+            all_kinds.append(v.kind)
+    assert kind in all_kinds, (
+        f"Expected violation kind '{kind}', found: {all_kinds}"
+    )

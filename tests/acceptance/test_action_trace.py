@@ -73,3 +73,16 @@ def test_records_categorized_trace_with_given_when_then(ctx):
     ctx.then.trace_entry_matches(TraceEntryCheck(index=0, kind="action", category="given", status="pass"))
     ctx.then.trace_entry_matches(TraceEntryCheck(index=1, kind="action", category="when", status="pass"))
     ctx.then.trace_entry_matches(TraceEntryCheck(index=2, kind="assertion", category="then", status="pass"))
+
+
+@s.test
+def test_trace_is_empty_before_any_operations(ctx):
+    """Before any operations execute, the trace has zero entries."""
+    ctx.given.define_domain(DomainSpec(
+        name="trace-empty",
+        actions=["noop"],
+        queries=[],
+        assertions=[],
+    ))
+    ctx.given.create_adapter(AdapterSpec())
+    ctx.then.trace_has_length(TraceLengthCheck(expected=0))
