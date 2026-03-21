@@ -9,6 +9,7 @@ from averspec import suite
 from tests.acceptance.domain import (
     AverCore, DomainSpec, AdapterSpec, OperationCall, ProxyCall,
     MarkerCheck, TraceCheck, ProxyRestrictionCheck, CompletenessCheck,
+    MarkerNamesCheck, TraceLengthCheck, TraceNameCheck,
 )
 
 s = suite(AverCore)
@@ -37,9 +38,9 @@ def test_domain_markers_queryable(ctx):
         queries=[],
         assertions=["exists"],
     ))
-    markers = ctx.query.get_markers()
-    names = {m.name for m in markers}
-    assert names == {"create", "update", "exists"}
+    ctx.then.markers_have_names(MarkerNamesCheck(
+        expected_names=["create", "update", "exists"],
+    ))
 
 
 # --- Adapter completeness ---
@@ -94,10 +95,9 @@ def test_multiple_operations_build_trace(ctx):
     ctx.given.create_adapter(AdapterSpec())
     ctx.when.call_operation(OperationCall(marker_name="step_one"))
     ctx.when.call_operation(OperationCall(marker_name="step_two"))
-    trace = ctx.query.get_trace()
-    assert len(trace) == 2
-    assert trace[0].name == "multi-trace.step_one"
-    assert trace[1].name == "multi-trace.step_two"
+    ctx.then.trace_has_length(TraceLengthCheck(expected=2))
+    ctx.then.trace_name_at_index(TraceNameCheck(index=0, expected_name="multi-trace.step_one"))
+    ctx.then.trace_name_at_index(TraceNameCheck(index=1, expected_name="multi-trace.step_two"))
 
 
 # --- Proxy restrictions ---

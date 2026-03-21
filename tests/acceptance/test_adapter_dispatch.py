@@ -4,7 +4,7 @@ from averspec import suite
 from tests.acceptance.domain import (
     AverCore, DomainSpec, AdapterSpec, OperationCall,
     TraceEntryCheck, TraceLengthCheck, QueryResultCheck,
-    FailingAssertionSpec, ExtensionSpec,
+    FailingAssertionSpec, ExtensionSpec, QueryResultTypeCheck,
 )
 
 s = suite(AverCore)
@@ -107,9 +107,12 @@ def test_query_returns_typed_result_value(ctx):
     ))
     ctx.given.create_adapter(AdapterSpec())
     ctx.when.call_operation(OperationCall(marker_name="get_count", payload="x"))
-    result = ctx.query.get_query_result("get_count")
-    assert result == "result-get_count"
-    assert isinstance(result, str)
+    ctx.then.query_returned_value(QueryResultCheck(
+        marker_name="get_count", expected="result-get_count",
+    ))
+    ctx.then.query_result_type_is(QueryResultTypeCheck(
+        marker_name="get_count", expected_type="str",
+    ))
 
 
 @s.test

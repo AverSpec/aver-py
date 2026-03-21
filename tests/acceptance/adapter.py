@@ -18,6 +18,9 @@ from tests.acceptance.domain import (
     ExtensionSpec, ExtensionMarkerCheck,
     ContractDomainSpec, ContractTraceSpec, ContractSpanSpec,
     CoverageBreakdownCheck,
+    MarkerNamesCheck, MarkerKindMapCheck, MarkerCountCheck,
+    TraceNameCheck, ViolationCountCheck, MissingMarkerErrorCheck,
+    QueryResultTypeCheck,
 )
 
 
@@ -848,4 +851,98 @@ def violation_includes(wb: AverWorkbench, kind: str):
             all_kinds.append(v.kind)
     assert kind in all_kinds, (
         f"Expected violation kind '{kind}', found: {all_kinds}"
+    )
+
+
+# --- Inline query-result assertions ---
+
+@adapter.handle(AverCore.markers_have_names)
+def markers_have_names(wb: AverWorkbench, check: MarkerNamesCheck):
+    """Assert that the current domain's marker names equal expected set."""
+    if wb.current_domain is None:
+        actual = set()
+    else:
+        actual = set(wb.current_domain._aver_markers.keys())
+    expected = set(check.expected_names)
+    assert actual == expected, f"Marker names {actual} != expected {expected}"
+
+
+@adapter.handle(AverCore.marker_kinds_match)
+def marker_kinds_match(wb: AverWorkbench, check: MarkerKindMapCheck):
+    """Assert that markers map name->kind as expected."""
+    if wb.current_domain is None:
+        raise RuntimeError("No domain defined")
+    markers = wb.current_domain._aver_markers
+    for name, expected_kind in check.expected.items():
+        assert name in markers, f"Marker '{name}' not found"
+        assert markers[name].kind.value == expected_kind, (
+            f"Marker '{name}' kind is '{markers[name].kind.value}', expected '{expected_kind}'"
+        )
+
+
+@adapter.handle(AverCore.extension_marker_count_is)
+def extension_marker_count_is(wb: AverWorkbench, check: MarkerCountCheck):
+    """Assert that the extended domain has exactly N markers."""
+    if wb.extended_domain is None:
+        raise RuntimeError("No extended domain")
+    actual = len(wb.extended_domain._aver_markers)
+    assert actual == check.expected, f"Expected {check.expected} markers, got {actual}"
+
+
+@adapter.handle(AverCore.extension_marker_names_equal)
+def extension_marker_names_equal(wb: AverWorkbench, check: MarkerNamesCheck):
+    """Assert that the extended domain's marker names equal expected set."""
+    if wb.extended_domain is None:
+        raise RuntimeError("No extended domain")
+    actual = set(wb.extended_domain._aver_markers.keys())
+    expected = set(check.expected_names)
+    assert actual == expected, f"Extension marker names {actual} != expected {expected}"
+
+
+@adapter.handle(AverCore.trace_name_at_index)
+def trace_name_at_index(wb: AverWorkbench, check: TraceNameCheck):
+    """Assert that a trace entry at index has the expected qualified name."""
+    if wb.current_context is None:
+        raise RuntimeError("No adapter created")
+    trace = wb.current_context.trace()
+    assert check.index < len(trace), (
+        f"Trace has {len(trace)} entries, expected at least {check.index + 1}"
+    )
+    assert trace[check.index].name == check.expected_name, (
+        f"Trace[{check.index}].name is '{trace[check.index].name}', expected '{check.expected_name}'"
+    )
+
+
+@adapter.handle(AverCore.violation_count_is)
+def violation_count_is(wb: AverWorkbench, check: ViolationCountCheck):
+    """Assert exact violation count."""
+    if wb.contract_result is None:
+        actual = 0
+    else:
+        actual = wb.contract_result.total_violations
+    assert actual == check.expected, f"Expected {check.expected} violations, got {actual}"
+
+
+@adapter.handle(AverCore.missing_marker_raises_error)
+def missing_marker_raises_error(wb: AverWorkbench, check: MissingMarkerErrorCheck):
+    """Assert that accessing a nonexistent marker on a proxy raises AttributeError."""
+    if wb.current_context is None:
+        raise RuntimeError("No adapter created")
+    proxy = getattr(wb.current_context, check.proxy_name)
+    try:
+        getattr(proxy, check.marker_name)("payload")
+        assert False, f"Expected AttributeError from ctx.{check.proxy_name}.{check.marker_name}"
+    except AttributeError as e:
+        assert check.expected_match in str(e), (
+            f"Expected error to contain '{check.expected_match}', got: {e}"
+        )
+
+
+@adapter.handle(AverCore.query_result_type_is)
+def query_result_type_is(wb: AverWorkbench, check: QueryResultTypeCheck):
+    """Assert that a stored query result has the expected type."""
+    actual = wb.last_query_results.get(check.marker_name)
+    actual_type = type(actual).__name__
+    assert actual_type == check.expected_type, (
+        f"Query '{check.marker_name}' result type is '{actual_type}', expected '{check.expected_type}'"
     )

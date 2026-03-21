@@ -3,6 +3,7 @@
 from averspec import suite
 from tests.acceptance.domain import (
     AverCore, DomainSpec, ExtensionSpec, ExtensionMarkerCheck,
+    MarkerNamesCheck, MarkerCountCheck,
 )
 
 s = suite(AverCore)
@@ -44,9 +45,9 @@ def test_extension_with_only_new_actions(ctx):
         new_queries=[],
         new_assertions=[],
     ))
-    markers = ctx.query.get_extension_markers()
-    names = {m.name for m in markers}
-    assert names == {"original", "added_one", "added_two"}
+    ctx.then.extension_marker_names_equal(MarkerNamesCheck(
+        expected_names=["original", "added_one", "added_two"],
+    ))
 
 
 @s.test
@@ -64,8 +65,7 @@ def test_extension_preserves_marker_count(ctx):
         new_queries=["q2"],
         new_assertions=["c2"],
     ))
-    markers = ctx.query.get_extension_markers()
-    assert len(markers) == 6
+    ctx.then.extension_marker_count_is(MarkerCountCheck(expected=6))
 
 
 @s.test

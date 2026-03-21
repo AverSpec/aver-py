@@ -4,12 +4,10 @@ Verify that aver-py raises clear, specific errors when the framework
 is used incorrectly: missing markers, wrong proxy kinds, incomplete adapters.
 """
 
-import pytest
-
 from averspec import suite
 from tests.acceptance.domain import (
     AverCore, DomainSpec, AdapterSpec,
-    ProxyRestrictionCheck, CompletenessCheck,
+    ProxyRestrictionCheck, CompletenessCheck, MissingMarkerErrorCheck,
 )
 
 s = suite(AverCore)
@@ -24,12 +22,11 @@ def test_missing_marker_raises_attribute_error(ctx):
         assertions=[],
     ))
     ctx.given.create_adapter(AdapterSpec())
-
-    # Reach into the workbench to access the inner domain's context,
-    # then attempt to call a marker that does not exist.
-    wb = ctx._protocol_ctx
-    with pytest.raises(AttributeError, match="no marker 'nonexistent_marker'"):
-        wb.current_context.when.nonexistent_marker("payload")
+    ctx.then.missing_marker_raises_error(MissingMarkerErrorCheck(
+        proxy_name="when",
+        marker_name="nonexistent_marker",
+        expected_match="no marker 'nonexistent_marker'",
+    ))
 
 
 @s.test

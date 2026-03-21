@@ -188,6 +188,54 @@ class CoverageBreakdownCheck:
     assertions_total: int
 
 
+# --- Inline query result checks ---
+
+@dataclass
+class MarkerNamesCheck:
+    """Check that marker names equal an expected set."""
+    expected_names: list[str]  # compared as set
+
+
+@dataclass
+class MarkerKindMapCheck:
+    """Check that markers map name->kind as expected."""
+    expected: dict  # {name: kind_str}
+
+
+@dataclass
+class MarkerCountCheck:
+    """Check that extension markers have a specific count."""
+    expected: int
+
+
+@dataclass
+class TraceNameCheck:
+    """Check a trace entry's qualified name at a given index."""
+    index: int
+    expected_name: str
+
+
+@dataclass
+class ViolationCountCheck:
+    """Check the exact number of contract violations."""
+    expected: int
+
+
+@dataclass
+class MissingMarkerErrorCheck:
+    """Check that accessing a nonexistent marker on a proxy raises AttributeError."""
+    proxy_name: str
+    marker_name: str
+    expected_match: str  # substring expected in the error message
+
+
+@dataclass
+class QueryResultTypeCheck:
+    """Check that a stored query result has an expected type name."""
+    marker_name: str
+    expected_type: str  # e.g. "str", "int"
+
+
 # --- Results ---
 
 @dataclass
@@ -266,3 +314,11 @@ class AverCore:
     has_parent_domain = assertion(str)  # parent domain name
     adapter_count_is = assertion(int)
     coverage_breakdown_matches = assertion(type(None))  # uses CoverageBreakdownCheck
+    markers_have_names = assertion(MarkerNamesCheck)
+    marker_kinds_match = assertion(MarkerKindMapCheck)
+    extension_marker_count_is = assertion(MarkerCountCheck)
+    extension_marker_names_equal = assertion(MarkerNamesCheck)
+    trace_name_at_index = assertion(TraceNameCheck)
+    violation_count_is = assertion(ViolationCountCheck)
+    missing_marker_raises_error = assertion(MissingMarkerErrorCheck)
+    query_result_type_is = assertion(QueryResultTypeCheck)

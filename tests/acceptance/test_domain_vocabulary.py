@@ -3,6 +3,7 @@
 from averspec import suite
 from tests.acceptance.domain import (
     AverCore, DomainSpec, MarkerCheck, VocabularyCheck,
+    MarkerNamesCheck, MarkerKindMapCheck,
 )
 
 s = suite(AverCore)
@@ -35,8 +36,7 @@ def test_allows_empty_vocabulary(ctx):
         assertions=[],
     ))
     ctx.then.has_vocabulary(VocabularyCheck(actions=0, queries=0, assertions=0))
-    markers = ctx.query.get_markers()
-    assert markers == []
+    ctx.then.markers_have_names(MarkerNamesCheck(expected_names=[]))
 
 
 @s.test
@@ -48,8 +48,8 @@ def test_markers_report_correct_kind(ctx):
         queries=["get_thing"],
         assertions=["check_thing"],
     ))
-    markers = ctx.query.get_markers()
-    kinds_by_name = {m.name: m.kind for m in markers}
-    assert kinds_by_name["do_thing"] == "action"
-    assert kinds_by_name["get_thing"] == "query"
-    assert kinds_by_name["check_thing"] == "assertion"
+    ctx.then.marker_kinds_match(MarkerKindMapCheck(expected={
+        "do_thing": "action",
+        "get_thing": "query",
+        "check_thing": "assertion",
+    }))

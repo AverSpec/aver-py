@@ -2,7 +2,7 @@
 
 from averspec import suite
 from tests.acceptance.domain import (
-    AverCore, ContractDomainSpec, ContractTraceSpec,
+    AverCore, ContractDomainSpec, ContractTraceSpec, ViolationCountCheck,
 )
 
 s = suite(AverCore)
@@ -72,8 +72,7 @@ def test_verify_passes_on_matching_production_traces(ctx):
         spans=[{"name": "order.checkout", "attributes": {"amount": 100}, "trace_id": "t1", "span_id": "s1"}],
     ))
     ctx.then.contract_passes()
-    violations = ctx.query.get_contract_violations()
-    assert violations == 0
+    ctx.then.violation_count_is(ViolationCountCheck(expected=0))
 
 
 @s.test
