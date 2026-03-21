@@ -26,3 +26,6 @@ packages = ["src/averspec"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+filterwarnings = [
+    "ignore:cannot collect test class 'Test(Metadata|Completion)':pytest.PytestCollectionWarning",
+]

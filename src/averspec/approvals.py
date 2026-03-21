@@ -7,7 +7,7 @@ import json
 import os
 import re
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Protocol as TypingProtocol, runtime_checkable
 
 
 def _safe_name(name: str) -> str:
@@ -24,6 +24,93 @@ def _caller_info() -> tuple[str, str]:
     # Fallback: use the immediate caller's caller
     frame = inspect.stack()[2]
     return frame.filename, frame.function
+
+
+# --- Serializer Protocol and Registry ---
+
+
+@runtime_checkable
+class Serializer(TypingProtocol):
+    """Protocol for custom serializers."""
+
+    name: str
+    file_extension: str
+
+    def serialize(self, value: Any) -> str: ...
+
+    def normalize(self, text: str) -> str:
+        """Optional normalization before comparison."""
+        ...
+
+
+class _JsonSerializer:
+    name = "json"
+    file_extension = "json"
+
+    def serialize(self, value: Any) -> str:
+        return json.dumps(value, indent=2, sort_keys=True, default=str)
+
+    def normalize(self, text: str) -> str:
+        return text
+
+
+class _TextSerializer:
+    name = "text"
+    file_extension = "txt"
+
+    def serialize(self, value: Any) -> str:
+        if isinstance(value, bytes):
+            return value.decode("utf-8", errors="replace")
+        return str(value)
+
+    def normalize(self, text: str) -> str:
+        return text
+
+
+_serializer_registry: dict[str, Serializer] = {
+    "json": _JsonSerializer(),
+    "text": _TextSerializer(),
+}
+
+
+def register_serializer(name: str, serializer: Serializer) -> None:
+    """Register a custom serializer by name."""
+    _serializer_registry[name] = serializer
+
+
+def _get_serializer_registry() -> dict[str, Serializer]:
+    """Access the registry (for testing)."""
+    return _serializer_registry
+
+
+def _auto_detect_serializer(value: Any) -> Serializer:
+    """Pick a serializer based on value type."""
+    if isinstance(value, (dict, list)):
+        return _serializer_registry["json"]
+    return _serializer_registry["text"]
+
+
+def _resolve_serializer(
+    value: Any,
+    serializer_arg: Callable | str | None,
+) -> tuple[Serializer | None, Callable | None]:
+    """Resolve serializer from argument.
+
+    Returns (registry_serializer, legacy_callable).
+    Only one will be non-None.
+    """
+    if serializer_arg is None:
+        return _auto_detect_serializer(value), None
+    if isinstance(serializer_arg, str):
+        s = _serializer_registry.get(serializer_arg)
+        if s is None:
+            raise ValueError(
+                f"Unknown serializer '{serializer_arg}'. "
+                f"Registered: {list(_serializer_registry.keys())}"
+            )
+        return s, None
+    # Legacy callable path
+    return None, serializer_arg
 
 
 def _serialize(value: Any, serializer: Callable | None = None) -> tuple[str, str]:
@@ -100,7 +187,8 @@ class _Approve:
         value: Any,
         *,
         name: str = "approval",
-        serializer: Callable | None = None,
+        serializer: Callable | str | None = None,
+        comparator: Callable | None = None,
         scrub: list[dict] | None = None,
         test_name: str | None = None,
         file_path: str | None = None,
@@ -115,8 +203,15 @@ class _Approve:
             if test_name is None:
                 test_name = auto_test
 
-        # Serialize
-        text, ext = _serialize(value, serializer)
+        # Resolve serializer (registry or legacy callable)
+        registry_ser, legacy_ser = _resolve_serializer(value, serializer)
+
+        if registry_ser is not None:
+            text = registry_ser.serialize(value)
+            ext = registry_ser.file_extension
+        else:
+            text, ext = _serialize(value, legacy_ser)
+
         text = _apply_scrubbers(text, scrub)
 
         # Build paths
@@ -142,7 +237,14 @@ class _Approve:
 
         approved_text = approved_path.read_text(encoding="utf-8")
 
-        if text == approved_text:
+        # Compare using custom comparator or exact match
+        if comparator is not None:
+            result = comparator(approved_text, text)
+            is_equal = result.get("equal", False) if isinstance(result, dict) else bool(result)
+        else:
+            is_equal = text == approved_text
+
+        if is_equal:
             # Match: clean up any stale files
             received_path.unlink(missing_ok=True)
             diff_path.unlink(missing_ok=True)

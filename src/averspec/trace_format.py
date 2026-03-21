@@ -68,4 +68,17 @@ def format_trace(entries: list[TraceEntry]) -> str:
         line = f"  {icon} {label} {entry.name}({payload_str}){duration_str}{error_str}"
         lines.append(line)
 
+        # Telemetry info
+        if entry.telemetry is not None:
+            telem = entry.telemetry
+            if telem.matched and telem.matched_span:
+                attrs_str = ""
+                if telem.expected.attributes:
+                    attrs_str = f" {json.dumps(telem.expected.attributes)}"
+                lines.append(f"         \u2713 telemetry: {telem.expected.span}{attrs_str}")
+            else:
+                lines.append(
+                    f"         \u26a0 telemetry: expected span '{telem.expected.span}' not found"
+                )
+
     return "\n".join(lines)

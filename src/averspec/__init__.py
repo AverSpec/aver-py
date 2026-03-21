@@ -3,7 +3,7 @@
 from averspec.domain import domain, action, query, assertion, Marker, MarkerKind
 from averspec.adapter import implement
 from averspec.suite import suite, Context, ComposedSuite
-from averspec.protocol import Protocol, TelemetryCollector, unit, with_fixture
+from averspec.protocol import Protocol, TelemetryCollector, unit, with_fixture, TestMetadata, TestCompletion, Attachment
 from averspec.config import define_config
 from averspec.trace import TraceEntry
 from averspec.eventually import eventually
@@ -20,6 +20,8 @@ from averspec.correlation import verify_correlation
 from averspec.telemetry_contract import extract_contract, BehavioralContract
 from averspec.telemetry_verify import verify_contract, ConformanceReport
 from averspec.otlp_receiver import create_otlp_receiver
+from averspec.contract_io import write_contracts, read_contracts, read_contract_file, slugify
+from averspec.approvals import register_serializer
 
 
 def __getattr__(name: str):
@@ -47,6 +49,9 @@ __all__ = [
     "TelemetryCollector",
     "unit",
     "with_fixture",
+    "TestMetadata",
+    "TestCompletion",
+    "Attachment",
     "define_config",
     "TraceEntry",
     "eventually",
@@ -67,4 +72,11 @@ __all__ = [
     "verify_contract",
     "ConformanceReport",
     "create_otlp_receiver",
+    # Contract I/O
+    "write_contracts",
+    "read_contracts",
+    "read_contract_file",
+    "slugify",
+    # Approvals extensibility
+    "register_serializer",
 ]

@@ -100,6 +100,7 @@ def domain(name: str):
         ):
             """Create a new domain that inherits this domain's markers plus new ones."""
             new_markers = {}
+            collisions = []
             for source, kind in [
                 (actions or {}, MarkerKind.ACTION),
                 (queries or {}, MarkerKind.QUERY),
@@ -112,11 +113,15 @@ def domain(name: str):
                             f"got {type(mk).__name__}"
                         )
                     if mk_name in markers:
-                        raise ValueError(
-                            f"Domain extension collision: '{mk_name}' already exists "
-                            f"in parent domain '{name}'"
-                        )
+                        collisions.append(mk_name)
                     new_markers[mk_name] = mk
+
+            if collisions:
+                names = ", ".join(repr(n) for n in collisions)
+                raise ValueError(
+                    f"Domain extension collision: {names} already exist "
+                    f"in parent domain '{name}'"
+                )
 
             # Build a new class dynamically
             child_cls = type(ext_name, (), {})
@@ -173,6 +178,7 @@ def _make_extend(parent_cls, parent_name, parent_markers):
         assertions: dict[str, Any] | None = None,
     ):
         new_markers = {}
+        collisions = []
         for source, kind in [
             (actions or {}, MarkerKind.ACTION),
             (queries or {}, MarkerKind.QUERY),
@@ -185,11 +191,15 @@ def _make_extend(parent_cls, parent_name, parent_markers):
                         f"got {type(mk).__name__}"
                     )
                 if mk_name in parent_markers:
-                    raise ValueError(
-                        f"Domain extension collision: '{mk_name}' already exists "
-                        f"in parent domain '{parent_name}'"
-                    )
+                    collisions.append(mk_name)
                 new_markers[mk_name] = mk
+
+        if collisions:
+            names = ", ".join(repr(n) for n in collisions)
+            raise ValueError(
+                f"Domain extension collision: {names} already exist "
+                f"in parent domain '{parent_name}'"
+            )
 
         child_cls = type(ext_name, (), {})
         all_markers: dict[str, Marker] = {}
