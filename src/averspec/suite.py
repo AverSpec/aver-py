@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import logging
 import time
 from typing import Any, Callable
 
 from averspec.adapter import Adapter
 from averspec.domain import Marker, MarkerKind
 from averspec.trace import TraceEntry
+from averspec.telemetry_types import TelemetryExpectation, TelemetryMatchResult
+from averspec.telemetry_mode import resolve_telemetry_mode
+
+logger = logging.getLogger("averspec")
 
 
 class NarrativeProxy:
@@ -56,17 +61,22 @@ class NarrativeProxy:
             try:
                 result = self._adapter.execute_sync(marker.name, self._ctx, payload)
                 elapsed = time.perf_counter() - start
-                self._trace.append(
-                    TraceEntry(
-                        kind=marker.kind.value,
-                        category=self._category,
-                        name=f"{self._domain._aver_domain_name}.{marker.name}",
-                        payload=payload,
-                        status="pass",
-                        duration_ms=elapsed * 1000,
-                        result=result,
-                    )
+                entry = TraceEntry(
+                    kind=marker.kind.value,
+                    category=self._category,
+                    name=f"{self._domain._aver_domain_name}.{marker.name}",
+                    payload=payload,
+                    status="pass",
+                    duration_ms=elapsed * 1000,
+                    result=result,
                 )
+                self._trace.append(entry)
+
+                # Per-step telemetry verification
+                _apply_telemetry_verification(
+                    entry, payload, marker, self._adapter.protocol
+                )
+
                 return result
             except Exception as e:
                 elapsed = time.perf_counter() - start
@@ -84,6 +94,94 @@ class NarrativeProxy:
                 raise
 
         return invoke
+
+
+def _match_span(span, expected: TelemetryExpectation) -> bool:
+    """Check if a collected span matches an expectation."""
+    if span.name != expected.span:
+        return False
+    for key, value in expected.attributes.items():
+        actual = span.attributes.get(key)
+        if actual != value:
+            return False
+    return True
+
+
+def _apply_telemetry_verification(
+    entry: TraceEntry,
+    payload: Any,
+    marker: Marker,
+    protocol: Any,
+) -> None:
+    """Run per-step telemetry verification after a successful step.
+
+    Resolves the marker's telemetry declaration (static or callable),
+    searches collected spans for a match, and attaches the result to the entry.
+    In "fail" mode, raises on mismatch. In "warn" mode, logs a warning.
+    """
+    if marker.telemetry is None:
+        return
+
+    collector = getattr(protocol, "telemetry", None)
+    if collector is None:
+        return
+
+    mode = resolve_telemetry_mode()
+    if mode == "off":
+        return
+
+    # Resolve telemetry declaration
+    if callable(marker.telemetry):
+        expected = marker.telemetry(payload)
+    else:
+        expected = marker.telemetry
+
+    if not isinstance(expected, TelemetryExpectation):
+        return
+
+    # Search collected spans
+    spans = collector.get_spans()
+    matched_span = None
+    for span in spans:
+        if _match_span(span, expected):
+            matched_span = span
+            break
+
+    from averspec.telemetry_types import CollectedSpan
+
+    result = TelemetryMatchResult(
+        expected=TelemetryExpectation(
+            span=expected.span,
+            attributes=dict(expected.attributes),
+            causes=list(expected.causes),
+        ),
+        matched=matched_span is not None,
+        matched_span=CollectedSpan(
+            trace_id=matched_span.trace_id,
+            span_id=matched_span.span_id,
+            name=matched_span.name,
+            attributes=dict(matched_span.attributes),
+            parent_span_id=matched_span.parent_span_id,
+            links=list(matched_span.links),
+        ) if matched_span is not None else None,
+    )
+    entry.telemetry = result
+
+    if not result.matched:
+        if mode == "fail":
+            entry.status = "fail"
+            raise AssertionError(
+                f"Telemetry mismatch: expected span '{expected.span}' not found"
+            )
+        if mode == "warn":
+            attr_info = ""
+            if expected.attributes:
+                attr_info = f" with attributes {expected.attributes}"
+            available = [s.name for s in spans]
+            logger.warning(
+                f"Telemetry warning: expected span '{expected.span}'"
+                f"{attr_info} not found. Available spans: {available}"
+            )
 
 
 class Context:

@@ -2,15 +2,29 @@
 
 from __future__ import annotations
 
-from typing import Any, Callable, Generic, TypeVar
+from typing import Any, Callable, Generic, TypeVar, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from averspec.telemetry_types import CollectedSpan
 
 Ctx = TypeVar("Ctx")
+
+
+class TelemetryCollector:
+    """Interface for collecting telemetry spans during test execution."""
+
+    def get_spans(self) -> list[CollectedSpan]:
+        raise NotImplementedError
+
+    def reset(self) -> None:
+        raise NotImplementedError
 
 
 class Protocol(Generic[Ctx]):
     """Base protocol. Subclass or use unit() factory."""
 
     name: str = "unknown"
+    telemetry: TelemetryCollector | None = None
 
     def setup(self) -> Ctx:
         raise NotImplementedError
