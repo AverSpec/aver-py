@@ -16,7 +16,7 @@ class AdapterError(Exception):
 class Adapter:
     """A bound adapter: domain + protocol + handlers."""
 
-    def __init__(self, domain_cls: type, protocol: Any, handlers: dict[str, Callable]):
+    def __init__(self, domain_cls: type, protocol: Any, handlers: dict[str, tuple[Callable, int]]):
         self.domain_cls = domain_cls
         self.protocol = protocol
         self.handlers = handlers
@@ -31,11 +31,7 @@ class Adapter:
 
     def execute_sync(self, marker_name: str, ctx: Any, payload: Any = None) -> Any:
         """Execute a handler, transparently handling async."""
-        handler = self.handlers[marker_name]
-
-        # Determine if handler accepts a payload parameter
-        sig = inspect.signature(handler)
-        param_count = len(sig.parameters)
+        handler, param_count = self.handlers[marker_name]
 
         if param_count >= 2:
             result = handler(ctx, payload)
@@ -92,7 +88,14 @@ class AdapterBuilder:
                 f"for markers not in domain: {', '.join(sorted(extra))}"
             )
 
-        return Adapter(self.domain_cls, self.protocol, dict(self._handlers))
+        # Cache handler param counts at build time so execute_sync()
+        # doesn't call inspect.signature() on every invocation.
+        handlers_with_params: dict[str, tuple[Callable, int]] = {}
+        for name, fn in self._handlers.items():
+            sig = inspect.signature(fn)
+            handlers_with_params[name] = (fn, len(sig.parameters))
+
+        return Adapter(self.domain_cls, self.protocol, handlers_with_params)
 
 
 def implement(domain_cls: type, *, protocol: Any) -> AdapterBuilder:
@@ -102,3 +105,6 @@ def implement(domain_cls: type, *, protocol: Any) -> AdapterBuilder:
             f"{domain_cls.__name__} is not a domain. Decorate it with @domain first."
         )
     return AdapterBuilder(domain_cls, protocol)
+
+
+adapt = implement

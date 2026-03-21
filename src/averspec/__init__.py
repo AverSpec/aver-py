@@ -1,7 +1,7 @@
 """AverSpec — Domain-driven acceptance testing for Python."""
 
 from averspec.domain import domain, action, query, assertion, Marker, MarkerKind
-from averspec.adapter import implement
+from averspec.adapter import implement, adapt
 from averspec.suite import suite, Context, ComposedSuite
 from averspec.protocol import Protocol, TelemetryCollector, unit, with_fixture, TestMetadata, TestCompletion, Attachment
 from averspec.config import define_config
@@ -42,6 +42,7 @@ __all__ = [
     "Marker",
     "MarkerKind",
     "implement",
+    "adapt",
     "suite",
     "Context",
     "ComposedSuite",

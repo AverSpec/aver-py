@@ -130,7 +130,7 @@ def execute_failing_assertion(wb: AverWorkbench, spec: FailingAssertionSpec):
     def failing_handler(ctx, payload):
         raise AssertionError(f"Intentional failure in {spec.marker_name}")
 
-    wb.current_adapter.handlers[spec.marker_name] = failing_handler
+    wb.current_adapter.handlers[spec.marker_name] = (failing_handler, 2)
     try:
         try:
             getattr(wb.current_context.then, spec.marker_name)(spec.payload)
