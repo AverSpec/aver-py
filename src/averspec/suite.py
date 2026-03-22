@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 import time
 from typing import Any, Callable
@@ -52,7 +53,23 @@ class NarrativeProxy:
                 f"but ctx.{self._category} only accepts {kind_names}"
             )
 
-        def invoke(payload=None):
+        def invoke(*args, **kwargs):
+            # Resolve payload from args/kwargs:
+            # - Positional arg: use as-is (backward compatible)
+            # - kwargs only: construct the marker's payload_type if it's a dataclass,
+            #   otherwise pass the dict directly
+            # - Neither: None
+            if args:
+                payload = args[0]
+            elif kwargs:
+                pt = marker.payload_type
+                if dataclasses.is_dataclass(pt) and isinstance(pt, type):
+                    payload = pt(**kwargs)
+                else:
+                    payload = kwargs
+            else:
+                payload = None
+
             # Track coverage
             if self._called_markers is not None:
                 self._called_markers.add(name)
