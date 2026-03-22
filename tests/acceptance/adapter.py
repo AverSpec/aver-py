@@ -698,31 +698,49 @@ def define_contract_domain(wb: AverWorkbench, spec: ContractDomainSpec):
 
 @adapter.handle(AverCore.create_contract_adapter)
 def create_contract_adapter(wb: AverWorkbench, trace_spec: ContractTraceSpec):
-    """Create adapter with a stub TelemetryCollector that returns pre-configured spans."""
+    """Create adapter with a stub TelemetryCollector that emits matching spans per step."""
     if wb.contract_domain is None:
         raise RuntimeError("No contract domain defined yet")
 
     collector = _StubCollector()
     wb.contract_collector = collector
-
-    # Pre-load the collector with the provided spans
-    for span_dict in trace_spec.spans:
-        collector.add_span(CollectedSpan(
-            trace_id=span_dict.get("trace_id", "trace-001"),
-            span_id=span_dict.get("span_id", f"span-{span_dict['name']}"),
-            name=span_dict["name"],
-            attributes=span_dict.get("attributes", {}),
-        ))
+    wb.contract_trace_spec = trace_spec
 
     proto = _TelemetryProtocol()
     proto.telemetry = collector
 
     builder = implement(wb.contract_domain, protocol=proto)
 
+    # Build a mapping from action name to the span(s) it should emit.
+    # The trace_spec spans correspond to actions in domain declaration order.
+    action_names = [
+        name for name, marker in wb.contract_domain._aver_markers.items()
+        if marker.kind == MarkerKind.ACTION
+    ]
+    span_by_action: dict[str, dict] = {}
+    for i, act_name in enumerate(action_names):
+        if i < len(trace_spec.spans):
+            span_by_action[act_name] = trace_spec.spans[i]
+
     for name, marker in wb.contract_domain._aver_markers.items():
+        span_dict = span_by_action.get(name)
+
         @builder.handle(marker)
-        def handler(ctx, payload, _name=name):
-            pass  # The collector already has spans pre-loaded
+        def handler(ctx, payload, _name=name, _marker=marker, _span=span_dict, _collector=collector):
+            # Emit a span that matches what per-step telemetry verification expects.
+            if _span is not None and _marker.telemetry is not None:
+                # Resolve expected attributes from the marker's telemetry declaration
+                if callable(_marker.telemetry):
+                    expected = _marker.telemetry(payload)
+                else:
+                    expected = _marker.telemetry
+                # Use the declared span name and the spec's concrete attribute values
+                _collector.add_span(CollectedSpan(
+                    trace_id=_span.get("trace_id", "trace-001"),
+                    span_id=_span.get("span_id", f"span-{_span['name']}"),
+                    name=expected.span,
+                    attributes=dict(expected.attributes),
+                ))
 
     wb.contract_adapter = builder.build()
     inner_ctx = wb.contract_adapter.protocol.setup()
@@ -731,11 +749,40 @@ def create_contract_adapter(wb: AverWorkbench, trace_spec: ContractTraceSpec):
 
 @adapter.handle(AverCore.run_contract_operations)
 def run_contract_operations(wb: AverWorkbench, _):
-    """Execute all actions through the inner contract suite."""
+    """Execute all actions through the inner contract suite.
+
+    The handler emits matching spans so per-step telemetry verification passes
+    in any mode (including CI's default "fail" mode), and trace entries get
+    populated telemetry data for contract extraction.
+    """
     if wb.contract_context is None:
         raise RuntimeError("No contract adapter created yet")
-    for name, marker in wb.contract_domain._aver_markers.items():
-        if marker.kind == MarkerKind.ACTION:
+
+    spec = wb.contract_domain_spec
+    action_names = [
+        name for name, marker in wb.contract_domain._aver_markers.items()
+        if marker.kind == MarkerKind.ACTION
+    ]
+
+    for i, name in enumerate(action_names):
+        marker = wb.contract_domain._aver_markers[name]
+        # For parameterized telemetry, build a dict payload whose fields
+        # resolve to the concrete values from the trace spec spans.
+        if spec and spec.parameterized and i < len(spec.span_attributes):
+            payload = {}
+            for attr_key, attr_val in spec.span_attributes[i].items():
+                if isinstance(attr_val, str) and attr_val.startswith("$"):
+                    field_name = attr_val[1:]
+                    # Pull the concrete value from the trace spec span
+                    if wb.contract_trace_spec and i < len(wb.contract_trace_spec.spans):
+                        concrete = wb.contract_trace_spec.spans[i].get("attributes", {}).get(attr_key, "test-value")
+                    else:
+                        concrete = "test-value"
+                    payload[field_name] = concrete
+                else:
+                    payload[attr_key] = attr_val
+            getattr(wb.contract_context.when, name)(payload)
+        else:
             getattr(wb.contract_context.when, name)("test-payload")
 
 
