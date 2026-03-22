@@ -1009,7 +1009,7 @@ def build_extended_suite(wb: AverWorkbench, spec: BuildExtendedSuiteSpec):
 
     child_cls = parent_cls.extend(
         "ext-suite-child",
-        actions=spec.child_actions,
+        actions={name: action(str) for name in spec.child_actions},
     )
 
     builder = implement(child_cls, protocol=unit(lambda: {"called": []}))
