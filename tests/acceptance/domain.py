@@ -236,6 +236,32 @@ class QueryResultTypeCheck:
     expected_type: str  # e.g. "str", "int"
 
 
+@dataclass
+class BuildExtendedSuiteSpec:
+    """Build an extended domain suite with parent + child markers."""
+    parent_actions: list[str]
+    child_actions: list[str]
+
+
+@dataclass
+class CallExtendedOperationSpec:
+    """Call a marker in the extended suite workspace."""
+    marker_name: str
+
+
+@dataclass
+class ExtendedSuiteMarkerCountCheck:
+    """Check marker count in the extended suite workspace."""
+    expected: int
+
+
+@dataclass
+class MissingAdapterErrorCheck:
+    """Check that looking up a missing adapter lists registered adapters."""
+    domain_name: str
+    expected_registered: list[str]
+
+
 # --- Results ---
 
 @dataclass
@@ -322,3 +348,16 @@ class AverCore:
     violation_count_is = assertion(ViolationCountCheck)
     missing_marker_raises_error = assertion(MissingMarkerErrorCheck)
     query_result_type_is = assertion(QueryResultTypeCheck)
+
+    # Extended domain e2e suite actions
+    build_extended_suite = action(BuildExtendedSuiteSpec)
+    call_extended_operation = action(CallExtendedOperationSpec)
+
+    # Extended domain e2e suite queries
+    get_extended_suite_marker_count = query(type(None), int)
+
+    # Extended domain e2e suite assertions
+    extended_suite_marker_count_is = assertion(ExtendedSuiteMarkerCountCheck)
+
+    # Missing adapter error check
+    missing_adapter_error_lists_registered = assertion(MissingAdapterErrorCheck)

@@ -38,10 +38,19 @@ def pytest_generate_tests(metafunc):
         return
 
     if not adapters:
-        pytest.fail(
-            f"No adapters registered for domain '{suite.domain_cls._aver_domain_name}'. "
-            f"Did you call define_config(adapters=[...]) in conftest.py?"
-        )
+        registered_names = [
+            a.domain_cls._aver_domain_name for a in registry._adapters
+        ]
+        if registered_names:
+            pytest.fail(
+                f"No adapters registered for domain '{suite.domain_cls._aver_domain_name}'. "
+                f"Registered adapters: {registered_names}"
+            )
+        else:
+            pytest.fail(
+                f"No adapters registered for domain '{suite.domain_cls._aver_domain_name}'. "
+                f"Did you call define_config(adapters=[...]) in conftest.py?"
+            )
 
     metafunc.parametrize(
         "_aver_adapter",

@@ -21,6 +21,8 @@ from tests.acceptance.domain import (
     MarkerNamesCheck, MarkerKindMapCheck, MarkerCountCheck,
     TraceNameCheck, ViolationCountCheck, MissingMarkerErrorCheck,
     QueryResultTypeCheck,
+    BuildExtendedSuiteSpec, CallExtendedOperationSpec,
+    ExtendedSuiteMarkerCountCheck, MissingAdapterErrorCheck,
 )
 
 
@@ -993,3 +995,81 @@ def query_result_type_is(wb: AverWorkbench, check: QueryResultTypeCheck):
     assert actual_type == check.expected_type, (
         f"Query '{check.marker_name}' result type is '{actual_type}', expected '{check.expected_type}'"
     )
+
+
+# --- Extended domain e2e suite handlers ---
+
+
+@adapter.handle(AverCore.build_extended_suite)
+def build_extended_suite(wb: AverWorkbench, spec: BuildExtendedSuiteSpec):
+    """Build an extended domain with parent + child markers, implement, and create suite context."""
+    parent_attrs = {name: action(str) for name in spec.parent_actions}
+    parent_cls = type("ExtSuiteParent", (), parent_attrs)
+    domain_decorator("ext-suite-parent")(parent_cls)
+
+    child_cls = parent_cls.extend(
+        "ext-suite-child",
+        actions=spec.child_actions,
+    )
+
+    builder = implement(child_cls, protocol=unit(lambda: {"called": []}))
+    for name in spec.parent_actions + spec.child_actions:
+        marker = child_cls._aver_markers[name]
+        @builder.handle(marker)
+        def handler(ctx, payload, _name=name):
+            ctx["called"].append(_name)
+
+    built_adapter = builder.build()
+    inner_ctx = built_adapter.protocol.setup()
+    wb._ext_suite_ctx = Context(child_cls, built_adapter, inner_ctx)
+    wb._ext_suite_markers = spec.parent_actions + spec.child_actions
+
+
+@adapter.handle(AverCore.call_extended_operation)
+def call_extended_operation(wb: AverWorkbench, spec: CallExtendedOperationSpec):
+    """Call a marker in the extended suite context."""
+    ctx = wb._ext_suite_ctx
+    getattr(ctx.when, spec.marker_name)("test")
+
+
+@adapter.handle(AverCore.get_extended_suite_marker_count)
+def get_extended_suite_marker_count(wb: AverWorkbench, _):
+    """Return marker count from the extended suite workspace."""
+    return len(getattr(wb, "_ext_suite_markers", []))
+
+
+@adapter.handle(AverCore.extended_suite_marker_count_is)
+def extended_suite_marker_count_is(wb: AverWorkbench, check: ExtendedSuiteMarkerCountCheck):
+    """Assert extended suite marker count."""
+    actual = len(getattr(wb, "_ext_suite_markers", []))
+    assert actual == check.expected, f"Expected {check.expected} markers, got {actual}"
+
+
+@adapter.handle(AverCore.missing_adapter_error_lists_registered)
+def missing_adapter_error_lists_registered(wb: AverWorkbench, check: MissingAdapterErrorCheck):
+    """Assert that looking up a missing adapter lists registered adapters in the error."""
+    from averspec.config import _Registry
+
+    registry = _Registry()
+    # Register adapters for the expected domains
+    for name in check.expected_registered:
+        attrs = {"dummy": action(str)}
+        cls = type(f"Registered_{name}", (), attrs)
+        domain_decorator(name)(cls)
+        builder = implement(cls, protocol=unit(lambda: {}))
+        marker = cls._aver_markers["dummy"]
+        @builder.handle(marker)
+        def stub(ctx, payload):
+            pass
+        registry.register_adapter(builder.build())
+
+    # Look up a domain that doesn't exist
+    found = registry.find_adapters(type(f"Missing_{check.domain_name}", (), {"_aver_domain_name": check.domain_name, "_aver_markers": {}, "_aver_parent": None}))
+    assert len(found) == 0, "Expected no adapters found"
+
+    # Check that registered names can be extracted
+    registered_names = [a.domain_cls._aver_domain_name for a in registry._adapters]
+    for expected_name in check.expected_registered:
+        assert expected_name in registered_names, (
+            f"Expected '{expected_name}' in registered names: {registered_names}"
+        )
