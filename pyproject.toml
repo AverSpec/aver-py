@@ -1,9 +1,16 @@
 [project]
 name = "averspec"
-version = "0.0.1"
+version = "0.1.0"
 description = "Domain-driven acceptance testing for Python"
 requires-python = ">=3.11"
+license = "MIT"
+authors = [{ name = "Nate Jackson" }]
 dependencies = []
+
+[project.urls]
+Homepage = "https://averspec.dev"
+Repository = "https://github.com/AverSpec/aver-py"
+Documentation = "https://averspec.dev"
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
